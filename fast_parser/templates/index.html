@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="csrf-token" content="{{ csrf }}">
+  <title>Fast Parser · Футбольные матчи</title>
+  <link rel="stylesheet" href="/static/style.css?v={{ version }}">
+  <script src="/static/app.js?v={{ version }}" defer></script>
+</head>
+<body>
+<main>
+  <header><div><div class="eyebrow">FAST PARSER / {{ version }}</div><h1>Футбольные матчи</h1><p>Расписание, результаты и последние данные из бесплатных источников.</p></div><button id="settings-open" class="secondary">Настройки сбора</button></header>
+  <div class="statusline"><span class="dot"></span><span id="connection" role="status">Подключение…</span><span id="timezone-label"></span></div>
+  <section class="panel filters" aria-label="Выбор соревнования">
+    <label>Страна<input type="search" id="country-search" placeholder="Поиск страны" aria-label="Поиск страны"><select id="country"><option value="">Выберите страну</option></select></label>
+    <label>Лига<input type="search" id="league-search" placeholder="Поиск лиги" aria-label="Поиск лиги"><select id="league" disabled><option value="">Сначала выберите страну</option></select></label>
+    <label>Матч<input type="search" id="match-search" placeholder="Команда или матч" aria-label="Поиск матча"><select id="match" disabled><option value="">Сначала выберите лигу</option></select></label>
+  </section>
+  <section class="toolbar"><label>От даты<input type="date" id="date-from"></label><label>До даты включительно<input type="date" id="date-to"></label><label>Статус<select id="status"><option value="">Все</option><option value="scheduled">Предстоящие</option><option value="live">Идут</option><option value="paused">Перерыв / пауза</option><option value="finished">Завершённые</option><option value="postponed">Перенесённые</option><option value="cancelled">Отменённые</option><option value="abandoned">Прерванные</option><option value="unknown">Статус уточняется</option></select></label><button id="refresh">Обновить экран</button><button id="sync" class="secondary" disabled>Проверить источник</button></section>
+  <div id="notice" class="notice" role="status">Каталог загружается автоматически. Первый сбор занимает несколько минут.</div>
+  <div class="workspace">
+    <section class="panel matches-panel"><div class="section-heading"><h2 id="league-title">Расписание матчей</h2><span id="count" class="muted"></span></div><div class="table-scroll"><table><thead><tr><th>Начало</th><th>Хозяева</th><th>Счёт</th><th>Гости</th><th>Статус / минута</th></tr></thead><tbody id="rows"></tbody></table></div><p id="empty" class="empty">Выберите страну и лигу.</p><button id="more" class="secondary hidden">Загрузить ещё</button></section>
+    <aside class="panel card" id="detail" aria-live="polite"><div class="eyebrow">КАРТОЧКА МАТЧА</div><h2>Все детали в одном месте</h2><p class="muted">Выберите матч из списка или таблицы.</p></aside>
+  </div>
+  <details class="panel diagnostics"><summary>Покрытие и состояние источников</summary><div id="diagnostics"></div><p class="muted">Покрытие всего мирового футбола не гарантируется. OpenLigaDB — community-данные под ODbL; HTML Sky Sports — экспериментальный источник. Минута и тайм показываются только при наличии.</p></details>
+  <footer>Хранение завершённых матчей — 72 часа от известного окончания или первого обнаружения завершения. <a href="https://www.openligadb.de/" target="_blank" rel="noreferrer">OpenLigaDB / ODbL</a> · <a href="https://www.skysports.com/football-scores-fixtures" target="_blank" rel="noreferrer">Sky Sports</a></footer>
+</main>
+<dialog id="settings-dialog"><form id="settings-form"><div class="section-heading"><h2>Настройки сбора</h2><button type="button" id="settings-close" class="secondary">Закрыть</button></div><p class="muted">Настройки сбора отличаются от фильтров просмотра. Источники остаются бесплатными.</p>
+<div class="settings-grid"><label>Часовой пояс IANA<input name="timezone" required placeholder="Europe/Moscow"></label><label>Режим<select name="mode"><option value="rolling">Скользящее окно</option><option value="absolute">Абсолютный диапазон</option></select></label><label>Дней назад (0–3)<input name="lookback_days" type="number" min="0" max="3" required></label><label>Дней вперёд (1–90)<input name="lookahead_days" type="number" min="1" max="90" required></label><label>Абсолютное начало (ISO с зоной)<input name="date_from" placeholder="2026-10-06T00:00:00+03:00"></label><label>Абсолютный конец (не включительно)<input name="date_to" placeholder="2026-10-14T00:00:00+03:00"></label><label>Расписания, секунд<input name="fixtures_interval_seconds" type="number" min="900" required></label><label>Результаты, секунд<input name="results_interval_seconds" type="number" min="120" required></label><label>Live, секунд<input name="live_interval_seconds" type="number" min="120" required></label><label>Перепроверка итогов, секунд<input name="final_recheck_interval_seconds" type="number" min="900" required></label><label class="wide">Окна работы через запятую; пусто = круглосуточно<input name="active_windows" placeholder="08:00-23:00, 23:30-01:00"></label></div>
+<label class="check"><input type="checkbox" name="html_enabled">Собирать открытые HTML-страницы Sky Sports (экспериментально, все лиги на общей странице)</label><p class="muted">HTML-страницы могут измениться или стать недоступными. При блокировке сбор остановится. Дубли между источниками не объединяются автоматически.</p>
+<fieldset><legend>Лиги OpenLigaDB для сбора</legend><input type="search" id="enabled-search" placeholder="Поиск лиги"><div id="enabled-leagues" class="league-checks"></div></fieldset>
+<p id="settings-message" role="status"></p><button type="submit">Сохранить настройки</button></form></dialog>
+</body></html>

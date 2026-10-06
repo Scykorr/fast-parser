@@ -1,2 +1,41 @@
-# fast-parser
-programm for parsing sports sites
+# Fast Parser
+
+Бесплатный сбор футбольных расписаний/результатов с лёгким web UI. Python 3.14.6, FastAPI, SQLite WAL. Продукт **0.7.0**, рабочая предварительная версия.
+
+## Запуск
+
+Окружение `.venv` уже создано. Запустите **start.cmd**, затем откройте **http://127.0.0.1:8000**. Первое заполнение занимает несколько минут. Ctrl+C в консоли останавливает сервер/сбор.
+
+```powershell
+.\.venv\Scripts\python.exe -m fast_parser serve
+```
+
+На новом компьютере сначала:
+
+```powershell
+py -3.14 -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -r requirements.lock
+```
+
+Платные API не нужны. OpenLigaDB используется без ключа, Sky Sports — через открытые HTML-страницы. Выберите страну → лигу → матч: обе команды, счёт, начало, статус и доступные live-поля. Настройки доступны через интерфейс, БД — `data/football.sqlite3`.
+
+Матчи скрываются через 72 часа от известного конца или первого наблюдения завершения. Полный мировой охват и точные live-минуты не гарантированы; источники пока не объединяются автоматически.
+
+## Документация проекта
+
+- [Техническое задание](docs/TECHNICAL_SPEC.md)
+- [Роадмэп и версии продукта](docs/ROADMAP.md)
+- [Улучшения и узкие места](docs/IMPROVEMENTS_AND_BOTTLENECKS.md)
+- [Руководство пользователя](docs/USER_GUIDE.md)
+- [Источники и покрытие](docs/SOURCES.md)
+- [Отчёт проверок](docs/VERIFICATION_REPORT.md)
+- [История продукта](docs/CHANGELOG.md)
+
+## Проверки
+
+```powershell
+.\scripts\check.ps1
+.\.venv\Scripts\python.exe -m scripts.benchmark
+```
+
+Браузерный smoke: `node scripts/test_browser.cjs` при доступном Playwright, Edge и работающем сервере; `PLAYWRIGHT_MODULE` задаёт путь к установленному модулю. Границы замеров описаны в отчёте. Docker: `docker compose up --build` (подготовлен, не проверен здесь). Сервер привязан к localhost.

@@ -218,3 +218,7 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Local football storage, source responses, logs and runtime settings
+data/
+.idea/
