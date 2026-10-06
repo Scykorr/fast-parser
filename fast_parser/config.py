@@ -23,6 +23,7 @@ class Settings(BaseModel):
     active_windows: list[str] = Field(default_factory=list, max_length=10)
     enabled_leagues: list[str] = Field(default_factory=lambda: ["bl1", "bl2", "bl3", "pl", "la1", "ucl", "dfb"])
     html_enabled: bool = True
+    official_only: bool = True
 
     @model_validator(mode="after")
     def validate_values(self):

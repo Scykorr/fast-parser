@@ -43,6 +43,25 @@ def main():
             if not store.lease("collector", collector.owner, 60):
                 raise SystemExit("Worker уже работает. Используйте кнопку проверки в web UI или остановите сервер.")
             try:
+                if store.settings().official_only:
+                    from .english import PL_SOURCE, EFL_SOURCE
+                    from .sources import DFL_SOURCE, SA_SOURCE, SB_SOURCE
+                    for source in ("laliga_reference", PL_SOURCE, EFL_SOURCE, SA_SOURCE, SB_SOURCE, DFL_SOURCE):
+                        for attempt in range(90):
+                            try:
+                                count = await collector.sync_official() if source == "laliga_reference" else await collector.sync_german() if source == DFL_SOURCE else await collector.sync_italian(source) if source in {SA_SOURCE,SB_SOURCE} else await collector.sync_english(source)
+                                if source == PL_SOURCE and count is False and store.get_meta("english_due:"+source, "0") == "0" and args.command in {"sync-fixtures","sync-results"}:
+                                    continue  # bootstrap was loaded; fixtures follow after the shared quota
+                                if source == SA_SOURCE and count is False and store.get_meta("italian_due:"+source,"0") == "0" and args.command in {"sync-fixtures","sync-results"}:
+                                    continue
+                                print(source, count)
+                                break
+                            except Deferred:
+                                store.lease("collector", collector.owner, 60)
+                                await asyncio.sleep(1)
+                        else:
+                            raise SourceFailure(f"{source}: ожидание cooldown превысило лимит CLI")
+                    return
                 if args.command == "source-check" or not store.competitions():
                     print("catalog", await collector.discover())
                 if args.command in {"sync-fixtures", "sync-results"}:

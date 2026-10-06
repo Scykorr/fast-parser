@@ -54,11 +54,12 @@ def test_moved_future_match_can_revive(store, comp, now):
     assert store.match(m.id, later)["expires_at"] is None
 
 
-def test_cancelled_has_separate_anchor_and_unknown_is_retained(store, comp, now):
+def test_cancelled_cannot_regress_to_unknown(store, comp, now):
     store.upsert_matches([game(comp, now, status="cancelled")], now)
     assert store.match("ol:1", now)["expires_at"]
     store.upsert_matches([game(comp, now, status="unknown")], now + timedelta(hours=1))
-    assert store.match("ol:1", now + timedelta(days=4))["expires_at"] is None
+    assert store.match("ol:1", now + timedelta(hours=2))["status"] == "cancelled"
+    assert store.match("ol:1", now + timedelta(days=4)) is None
 
 
 def test_old_source_response_cannot_overwrite_new(store, comp, now):

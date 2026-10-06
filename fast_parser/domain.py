@@ -51,6 +51,8 @@ class Match:
     raw_status: str = ""
     verification: str = "single_source"
     result_verified: bool = False
+    source_url: str | None = None
+    scheduled_date: str | None = None
 
     def to_dict(self) -> dict:
         return asdict(self)

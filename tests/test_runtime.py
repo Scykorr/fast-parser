@@ -97,6 +97,7 @@ def test_api_csrf_names_filter_validation_and_expiration(tmp_path, comp):
         assert client.put("/api/v1/settings", json=data).status_code == 403
         headers = {"Origin": "http://testserver", "X-CSRF-Token": app.state.csrf}
         data["enabled_leagues"] = ["bl1"]
+        data["official_only"] = False  # explicitly test optional legacy sync
         assert client.put("/api/v1/settings", json=data, headers=headers).status_code == 200
         assert client.post("/api/v1/sync/ol:bl1:2026", headers=headers).status_code == 202
         headers["Origin"] = "https://evil.example"

@@ -1,6 +1,6 @@
 [project]
 name = "fast-parser"
-version = "0.7.0"
+version = "0.12.0"
 description = "Free football collector with a lightweight local web interface"
 requires-python = ">=3.13"
 dependencies = ["fastapi", "uvicorn", "httpx", "jinja2", "pydantic", "beautifulsoup4", "tzdata"]

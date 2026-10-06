@@ -12,6 +12,7 @@ def test_worker_can_process_durable_pending_task_after_restart(store, comp, open
     settings = store.settings()
     settings.enabled_leagues = ["bl1"]
     settings.html_enabled = False
+    settings.official_only = False  # this test exercises the optional legacy adapter
     store.save_settings(settings)
     store.set_meta("catalog_updated_at", stamp(utcnow()))
     openliga_row["matchDateTimeUTC"] = stamp(utcnow() + timedelta(hours=1))
