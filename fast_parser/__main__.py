@@ -12,15 +12,18 @@ from .storage import Store
 
 def main():
     parser = argparse.ArgumentParser(description="Бесплатный сбор футбола и локальный web UI")
-    parser.add_argument("command", choices=["serve", "run-worker", "sync-fixtures", "sync-results", "validate-config", "source-check", "coverage-report", "plan-collection", "cleanup"], nargs="?", default="serve")
+    parser.add_argument("command", choices=["serve", "stop", "run-worker", "sync-fixtures", "sync-results", "validate-config", "source-check", "coverage-report", "plan-collection", "cleanup"], nargs="?", default="serve")
     parser.add_argument("--port", type=int, default=8000)
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
     if args.command == "serve":
-        import uvicorn
-        uvicorn.run("fast_parser.app:app", host="127.0.0.1", port=args.port, workers=1, log_level="info")
+        from .lifecycle import serve
+        serve(args.port)
         return
+    if args.command == "stop":
+        from .lifecycle import stop
+        raise SystemExit(0 if stop(args.port) else 1)
     store = Store(Path(os.environ.get("FAST_PARSER_DB", str(ROOT / "data" / "football.sqlite3"))))
     if args.command == "cleanup":
         print(json.dumps({"expired": store.cleanup(dry_run=args.dry_run), "dry_run": args.dry_run}))

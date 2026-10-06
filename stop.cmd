@@ -5,5 +5,8 @@ if not exist ".venv\Scripts\python.exe" (
   pause
   exit /b 1
 )
-echo Open http://127.0.0.1:8000 in your browser. Use stop.cmd or Ctrl+C to stop.
-".venv\Scripts\python.exe" -m fast_parser serve
+".venv\Scripts\python.exe" -m fast_parser stop %*
+if errorlevel 1 (
+  pause
+  exit /b 1
+)
