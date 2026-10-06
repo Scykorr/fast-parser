@@ -45,14 +45,16 @@ def main():
             try:
                 if store.settings().official_only:
                     from .english import PL_SOURCE, EFL_SOURCE
-                    from .sources import DFL_SOURCE, SA_SOURCE, SB_SOURCE
-                    for source in ("laliga_reference", PL_SOURCE, EFL_SOURCE, SA_SOURCE, SB_SOURCE, DFL_SOURCE):
+                    from .sources import FNL_SOURCE, DFL_SOURCE, SA_SOURCE, SB_SOURCE
+                    for source in ("laliga_reference", PL_SOURCE, EFL_SOURCE, SA_SOURCE, SB_SOURCE, DFL_SOURCE, FNL_SOURCE):
                         for attempt in range(90):
                             try:
-                                count = await collector.sync_official() if source == "laliga_reference" else await collector.sync_german() if source == DFL_SOURCE else await collector.sync_italian(source) if source in {SA_SOURCE,SB_SOURCE} else await collector.sync_english(source)
+                                count = await collector.sync_official() if source == "laliga_reference" else await collector.sync_russian() if source == FNL_SOURCE else await collector.sync_german() if source == DFL_SOURCE else await collector.sync_italian(source) if source in {SA_SOURCE,SB_SOURCE} else await collector.sync_english(source)
                                 if source == PL_SOURCE and count is False and store.get_meta("english_due:"+source, "0") == "0" and args.command in {"sync-fixtures","sync-results"}:
                                     continue  # bootstrap was loaded; fixtures follow after the shared quota
                                 if source == SA_SOURCE and count is False and store.get_meta("italian_due:"+source,"0") == "0" and args.command in {"sync-fixtures","sync-results"}:
+                                    continue
+                                if source == FNL_SOURCE and count is False and not store.get_meta("fnl_plan", "") and args.command in {"sync-fixtures","sync-results"}:
                                     continue
                                 print(source, count)
                                 break

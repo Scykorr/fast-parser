@@ -19,9 +19,10 @@ from .domain import parse_time, stamp, utcnow
 from .storage import Store
 from .verification import CoverageVerification
 from .english import OFFICIAL_SOURCES, OFFICIAL_PREFIXES, PL_SOURCE, EFL_SOURCE, catalog as english_catalog
-from .sources import DFL_SOURCE, SA_SOURCE, SB_SOURCE, source_for_comp
+from .sources import FNL_SOURCE, RPL_SOURCE, DFL_SOURCE, SA_SOURCE, SB_SOURCE, source_for_comp
 from .italian import catalog as italian_catalog
 from .german import catalog as german_catalog
+from .russian import catalog as russian_catalog, RPL_REASON
 
 
 def create_app(db_path: Path | None = None, start_worker=True) -> FastAPI:
@@ -37,6 +38,11 @@ def create_app(db_path: Path | None = None, start_worker=True) -> FastAPI:
         store.catalog(english_catalog(year))
         store.catalog(italian_catalog(year))
         store.catalog(german_catalog(year))
+        store.catalog(russian_catalog(year))
+        store.mark_sync(f"rpl:premier-league:{year}",False,0,error=RPL_REASON)
+        if not store.get_meta("rpl_discovery_status",""):
+            store.source_error(RPL_SOURCE,RPL_REASON,3600,True)
+            store.set_meta("rpl_discovery_status","captcha; adapter_unavailable")
 
     @asynccontextmanager
     async def lifespan(app):
@@ -100,9 +106,11 @@ def create_app(db_path: Path | None = None, start_worker=True) -> FastAPI:
             source = source_for_comp(row["id"])
             row.update(source=source,
                        official_source=official, source_role="primary" if official else "legacy_unofficial",
-                       collection_allowed=official or not official_only,
-                       minute_supported=row["id"].startswith(("sky:","pl:")), period_supported=False,
-                       redundancy="none", live_score_supported=row["id"].startswith(("sky:","pl:")))
+                       collection_supported=not row["id"].startswith("rpl:"),
+                       collection_reason=RPL_REASON if row["id"].startswith("rpl:") else None,
+                       collection_allowed=not row["id"].startswith("rpl:") and (official or not official_only),
+                       minute_supported=row["id"].startswith(("sky:","pl:","fnl:")), period_supported=row["id"].startswith("fnl:"),
+                       redundancy="none", live_score_supported=row["id"].startswith(("sky:","pl:","fnl:")))
         return {"items": rows}
 
     @app.put("/api/v1/competitions/{cid}/verification")
@@ -158,6 +166,8 @@ def create_app(db_path: Path | None = None, start_worker=True) -> FastAPI:
     @app.post("/api/v1/sync/{cid}", status_code=202)
     def sync(cid: str):
         try:
+            if cid.startswith("rpl:"):
+                raise ValueError(RPL_REASON)
             if store.settings().official_only and not cid.startswith(OFFICIAL_PREFIXES):
                 raise ValueError("Официальный источник этой лиги пока не подключен; неофициальный сбор отключен")
             if cid.startswith(OFFICIAL_PREFIXES):
@@ -170,6 +180,8 @@ def create_app(db_path: Path | None = None, start_worker=True) -> FastAPI:
                     store.set_meta("english_due:"+source, "0")
                     if source == EFL_SOURCE:
                         store.set_meta("efl_cursor", "{}")
+                elif cid.startswith("fnl:"):
+                    store.set_meta("fnl_plan","{}")
                 elif cid.startswith("sa:"):
                     store.set_meta("italian_due:"+SA_SOURCE,"0")
                 else:
@@ -187,6 +199,8 @@ def create_app(db_path: Path | None = None, start_worker=True) -> FastAPI:
 
     @app.post("/api/v1/sources/{source}/reset")
     def reset(source: str):
+        if source == RPL_SOURCE:
+            raise HTTPException(422,RPL_REASON)
         if source not in {"openligadb", "skysports_html"} | OFFICIAL_SOURCES:
             raise HTTPException(404)
         # Manual recheck is an explicit operator action; never done by automatic retries.
@@ -204,7 +218,7 @@ def create_app(db_path: Path | None = None, start_worker=True) -> FastAPI:
         return {"version": __version__, "server_time": stamp(now), "worker_heartbeat": store.get_meta("worker_heartbeat") or None,
                 "catalog_updated_at": store.get_meta("catalog_updated_at") or None,
                 "source_policy": "official_only" if store.settings().official_only else "official_with_legacy",
-                "sources": [store.source(s) for s in ("laliga_reference", PL_SOURCE, EFL_SOURCE, SA_SOURCE, SB_SOURCE, DFL_SOURCE, "openligadb", "skysports_html")],
+                "sources": [store.source(s) for s in ("laliga_reference", PL_SOURCE, EFL_SOURCE, SA_SOURCE, SB_SOURCE, DFL_SOURCE, FNL_SOURCE, RPL_SOURCE, "openligadb", "skysports_html")],
                 "coverage": {"catalog": len(comps), "verified": sum(c["state"] == "verified" for c in comps), "enabled_openliga": enabled,
                              "verification": {status: sum(c["coverage_verification"]["status"] == status for c in comps)
                                               for status in ("verified", "partial", "unverified")}},

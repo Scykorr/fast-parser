@@ -112,3 +112,13 @@ end с ненулевым временем включает пограничны
 Существующий контракт сохранен: kickoff_at/finished_at/period/elapsed_minutes nullable,
 при неизвестном времени scheduled_date предварительный. raw_status сохраняет статус DFL;
 не выводите live из текущего времени или наличия счета. Подробнее: [GERMAN_SOURCES.md](GERMAN_SOURCES.md).
+
+## Россия — 0.13.0
+
+competition_id: `fnl:first-league:2026` и `rpl:premier-league:2026`; актуальные ID берите
+из `/api/v1/competitions?country=Россия`. ФНЛ: source=fnl_official, обычный API матчей,
+period/elapsed_minutes nullable, future score nullable. kickoff_at в UTC, scheduled_date
+— день источника. РПЛ: collection_supported=false, collection_allowed=false,
+collection_reason объясняет CAPTCHA/отсутствие адаптера. POST sync/reset РПЛ возвращает
+422 с этой причиной. Пустые результаты РПЛ не подтверждают отсутствие матчей.
+Схема БД/API матчей совместима; новые поля состояния необязательны для старых клиентов.

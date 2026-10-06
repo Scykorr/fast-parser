@@ -3,14 +3,14 @@ const $ = id => document.getElementById(id);
 const labels = {scheduled:"Предстоящий",live:"Идёт",paused:"Перерыв / пауза",finished:"Завершён",postponed:"Перенесён",cancelled:"Отменён",abandoned:"Прерван",unknown:"Статус уточняется"};
 const verificationLabels={unverified:"Не верифицировано",partial:"Частично верифицировано",verified:"Верифицировано"};
 let verificationCid=null;
-function verificationText(c){return (c?.official_source?"Официальный источник · ":c?.collection_allowed===false?"Официальный сбор не подключен · ":"Неофициальный источник · ")+(verificationLabels[c?.coverage_verification?.status]||verificationLabels.unverified);}
+function verificationText(c){return (c?.collection_supported===false?"Официальный сайт · Сбор недоступен · ":c?.official_source?"Официальный источник · ":c?.collection_allowed===false?"Официальный сбор не подключен · ":"Неофициальный источник · ")+(verificationLabels[c?.coverage_verification?.status]||verificationLabels.unverified);}
 function renderCoverage(){
   const c=competitions.find(c=>c.id===$("league").value),v=c?.coverage_verification;
   $("verification-open").disabled=!c;
   $("coverage-status").textContent=c?"Верификация лиги: "+verificationText(c):"Верификация: выберите лигу";
   $("coverage-status").className="coverage-"+(v?.status||"unverified");
   const checked=v?[v.fixtures?"расписание":null,v.results?"результаты":null,v.live?"live":null].filter(Boolean):[];
-  $("coverage-description").textContent=c?`${checked.length?"Проверено: "+checked.join(", ")+". ":"Покрытие еще не сверено. "}${v?.scope?"Выборка: "+v.scope+". ":""}${v?.updated_at?"Пометка обновлена: "+fmt(v.updated_at)+". ":""}${v?.evidence?"Основание: "+v.evidence+". ":""}${v?.note?"Замечания: "+v.note+". ":""}Сбор: ${c.collection_state==="available"?"последняя выборка получена":c.collection_state==="degraded"?"ошибка источника":"ожидается проверка источника"}. Все лиги доступны независимо от пометки.`:"Все доступные лиги остаются в каталоге независимо от верификации.";
+  $("coverage-description").textContent=c?`${checked.length?"Проверено: "+checked.join(", ")+". ":"Покрытие еще не сверено. "}${v?.scope?"Выборка: "+v.scope+". ":""}${v?.updated_at?"Пометка обновлена: "+fmt(v.updated_at)+". ":""}${v?.evidence?"Основание: "+v.evidence+". ":""}${v?.note?"Замечания: "+v.note+". ":""}${c.collection_reason?c.collection_reason+". ":""}Сбор: ${c.collection_state==="available"?"последняя выборка получена":c.collection_state==="degraded"?"ошибка источника":"ожидается проверка источника"}. Все лиги доступны независимо от пометки.`:"Все доступные лиги остаются в каталоге независимо от верификации.";
 }
 const periods = {first_half:"1-й тайм",half_time:"Перерыв",second_half:"2-й тайм",extra_first_half:"Доп. время · 1-й тайм",extra_break:"Перерыв доп. времени",extra_second_half:"Доп. время · 2-й тайм",penalties:"Пенальти"};
 let settings, countries=[], competitions=[], items=[], nextCursor=null, selected=null, requestId=0, abort=null, refreshBusy=false;

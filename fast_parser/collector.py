@@ -14,7 +14,7 @@ from .adapters import API_BASE, HTML_BASE, SchemaError, catalog_openliga, openli
 from .domain import parse_time, stamp, utcnow
 from .storage import Store
 from .english import OFFICIAL_SOURCES, PL_SOURCE, EFL_SOURCE
-from .sources import DFL_SOURCE, SA_SOURCE, SB_SOURCE
+from .sources import FNL_SOURCE, DFL_SOURCE, SA_SOURCE, SB_SOURCE
 
 log = logging.getLogger("fast_parser.collector")
 
@@ -70,6 +70,9 @@ class Collector:
                             delay = 60
                     await asyncio.to_thread(self.store.source_error, source, "HTTP 429: ограничение запросов", delay)
                     raise SourceFailure("HTTP 429")
+                if response.is_redirect and "captcha" in response.headers.get("location","").lower():
+                    await asyncio.to_thread(self.store.source_error,source,"CAPTCHA: источник остановлен",3600,True)
+                    raise SourceFailure("CAPTCHA")
                 response.raise_for_status()
                 chunks, size = [], 0
                 async for chunk in response.aiter_bytes():
@@ -395,6 +398,68 @@ class Collector:
         await asyncio.to_thread(self.store.source_success, DFL_SOURCE)
         return count
 
+    async def sync_russian(self):
+        from .russian import ACTIVE, active_season, page_url, parse_page
+        from zoneinfo import ZoneInfo
+        settings = await asyncio.to_thread(self.store.settings)
+        now = utcnow(); year = str(now.year if now.month >= 7 else now.year-1)
+        start,end = self.bounds(settings,now)
+        try:
+            cache = json.loads(await asyncio.to_thread(self.store.get_meta,"fnl_season","{}"))
+            if not cache or cache.get("year") != year or cache["refresh_after"] <= now.timestamp():
+                season = active_season(json.loads(await self.fetch(FNL_SOURCE,ACTIVE)),year)
+                await asyncio.to_thread(self.store.set_meta,"fnl_season",json.dumps(dict(year=year,season=season,refresh_after=now.timestamp()+86400)))
+                await asyncio.to_thread(self.store.source_success,FNL_SOURCE)
+                return False
+            plan = json.loads(await asyncio.to_thread(self.store.get_meta,"fnl_plan","{}"))
+            first = start.astimezone(ZoneInfo("Europe/Moscow")); last = end.astimezone(ZoneInfo("Europe/Moscow"))
+            wanted = set(); cursor = first.replace(day=1,hour=0,minute=0,second=0,microsecond=0)
+            while cursor <= last:
+                wanted.add((cursor.year,cursor.month))
+                cursor = cursor.replace(year=cursor.year+1,month=1) if cursor.month==12 else cursor.replace(month=cursor.month+1)
+            comp_id = f"fnl:first-league:{year}"
+            unresolved = await asyncio.to_thread(self.store.unresolved,now)
+            for m in unresolved:
+                if m["competition_id"] == comp_id and m["kickoff_at"]:
+                    dt = parse_time(m["kickoff_at"]).astimezone(ZoneInfo("Europe/Moscow"))
+                    wanted.add((dt.year,dt.month))
+            plan = {k:v for k,v in plan.items() if v.get("season") == cache["season"] and (v["year"],v["month"]) in wanted}
+            for y,month in sorted(wanted):
+                plan.setdefault(f"{y}-{month}",dict(year=y,month=month,season=cache["season"],offset=0,seen=[],due=0))
+            jobs = [(k,v) for k,v in plan.items() if v["due"] <= now.timestamp()]
+            if not jobs:
+                return False
+            key,job = min(jobs,key=lambda pair:pair[1]["due"])
+            comp,matches,nxt = parse_page(json.loads(await self.fetch(FNL_SOURCE,page_url(cache["season"],job["month"],job["year"],job["offset"]))),year,cache["season"],job["month"],job["year"],job["offset"])
+            seen = set(job["seen"])
+            if seen & {m.id for m in matches}:
+                raise SchemaError("ФНЛ: повтор ID между страницами")
+            seen.update(m.id for m in matches)
+            await asyncio.to_thread(self.store.catalog,[comp])
+            pending = await asyncio.to_thread(self.store.pending_ids,comp["id"])
+            selected = [m for m in matches if m.id in pending or
+                        (start <= parse_time(m.kickoff_at) < end if m.kickoff_at else
+                         m.scheduled_date and first.date().isoformat() <= m.scheduled_date <= last.date().isoformat())]
+            count = await asyncio.to_thread(self.store.upsert_matches,selected,now)
+            intervals = [job.get("interval",settings.fixtures_interval_seconds)]
+            for m in selected:
+                if m.status in {"live","paused"}:intervals.append(settings.live_interval_seconds)
+                elif m.status=="unknown" or m.status=="scheduled" and m.kickoff_at and parse_time(m.kickoff_at)<=now:intervals.append(settings.results_interval_seconds)
+                elif m.status=="finished":intervals.append(settings.final_recheck_interval_seconds)
+                elif m.kickoff_at:intervals.append(max(120,(parse_time(m.kickoff_at)-now).total_seconds()))
+            interval = min(intervals)
+            job.update(offset=nxt if nxt is not None else 0,seen=list(seen) if nxt is not None else [],
+                       due=now.timestamp()+(30 if nxt is not None else interval))
+            if nxt is not None:job["interval"]=interval
+            else:job.pop("interval",None)
+            await asyncio.to_thread(self.store.set_meta,"fnl_plan",json.dumps(plan))
+            await asyncio.to_thread(self.store.mark_sync,comp["id"],True,job["due"],count)
+            await asyncio.to_thread(self.store.source_success,FNL_SOURCE)
+            return count
+        except (ValueError,SchemaError) as exc:
+            await self.schema_failure(FNL_SOURCE,exc)
+            raise SourceFailure(str(exc)) from exc
+
     async def source_cycle(self, source):
         now = utcnow()
         settings = await asyncio.to_thread(self.store.settings)
@@ -405,6 +470,9 @@ class Collector:
             return
         if source in {PL_SOURCE, EFL_SOURCE}:
             await self.sync_english(source)
+            return
+        if source == FNL_SOURCE:
+            await self.sync_russian()
             return
         if source == DFL_SOURCE:
             await self.sync_german()
@@ -454,7 +522,7 @@ class Collector:
                         await asyncio.to_thread(self.store.cleanup)
                         last_cleanup = now.timestamp()
                     # At most one active task per source; cooldown is still persisted atomically.
-                    for source in ("laliga_reference", PL_SOURCE, EFL_SOURCE, SA_SOURCE, SB_SOURCE, DFL_SOURCE, "openligadb", "skysports_html"):
+                    for source in ("laliga_reference", PL_SOURCE, EFL_SOURCE, SA_SOURCE, SB_SOURCE, DFL_SOURCE, FNL_SOURCE, "openligadb", "skysports_html"):
                         job = jobs.get(source)
                         if job and job.done():
                             try:
