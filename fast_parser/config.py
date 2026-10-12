@@ -8,6 +8,9 @@ from pydantic import BaseModel, Field, model_validator
 
 ROOT = Path(__file__).resolve().parent.parent
 
+# Historical OpenLigaDB selection. Official workers do not read this list.
+LEGACY_ENABLED_LEAGUES = ("bl1", "bl2", "bl3", "pl", "la1", "ucl", "dfb")
+
 
 class Settings(BaseModel):
     timezone: str = "Europe/Moscow"
@@ -21,7 +24,7 @@ class Settings(BaseModel):
     live_interval_seconds: int = Field(default=120, ge=120, le=86400)
     final_recheck_interval_seconds: int = Field(default=21600, ge=900, le=86400)
     active_windows: list[str] = Field(default_factory=list, max_length=10)
-    enabled_leagues: list[str] = Field(default_factory=lambda: ["bl1", "bl2", "bl3", "pl", "la1", "ucl", "dfb"])
+    enabled_leagues: list[str] = Field(default_factory=lambda: list(LEGACY_ENABLED_LEAGUES))
     html_enabled: bool = True
     official_only: bool = True
 

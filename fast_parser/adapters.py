@@ -117,7 +117,7 @@ def parse_openliga(payload, competition: dict, now: datetime) -> list[Match]:
                          away_team={"id": str(away["teamId"]), "name": away.get("teamName") or "Команда не указана источником"},
                          kickoff_at=stamp(kickoff) if kickoff else None, status=status,
                          period="finished" if finished else "pre_match" if status == "scheduled" else None,
-                         raw_status=f"matchIsFinished={finished}")
+                         raw_status=None, score_scope="unknown" if finished else None)
             for value in row.get("matchResults", []):
                 # Result types are configured by each community league; trust explicit names only.
                 label = str(value.get("resultName", "")).casefold()
@@ -196,6 +196,17 @@ def parse_sky(html: str, requested_day: date, now: datetime) -> tuple[list[dict]
             if minute and status == "live":
                 item.elapsed_minutes = int(minute[1])
                 item.added_minutes = int(minute[2]) if minute[2] else None
+                item.raw_status = None
+            if item.status == "finished" and raw == "FT":
+                item.regular_home, item.regular_away = item.score_home, item.score_away
+                item.score_scope = "regulation"
+            elif item.status == "finished" and raw == "AET":
+                item.score_scope = "including_extra"
+            elif item.status == "finished" and raw in {"PEN", "PENS"}:
+                item.score_scope = "including_penalties"
+            elif item.status == "finished":
+                item.score_scope = "unknown"
+            item.scheduled_date = requested_day.isoformat()
             qualifier = str(row.get("statusQualifier") or "").casefold()
             item.period = {"first half": "first_half", "second half": "second_half",
                            "extra time first half": "extra_first_half", "extra time second half": "extra_second_half"}.get(qualifier, item.period)

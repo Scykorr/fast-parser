@@ -1,6 +1,7 @@
 # Получение матчей другой программой
 
-Версия продукта: 0.8.1. Дата: 06.10.2026.
+Актуальная версия продукта: 0.13.2. Уточнение документа: 13.10.2026.
+Основной текст API v1 первоначально написан для 0.8.1; дополнения ниже описывают новые поля и источники.
 
 Каталог возвращает `coverage_verification` отдельно от `collection_state`: доступность
 сбора не означает верификацию лиги. Пометки и API обновления описаны в
@@ -60,7 +61,7 @@ from urllib.request import urlopen
 from urllib.parse import urlencode
 
 base = "http://127.0.0.1:8000/api/v1"
-params = urlencode({"competition_id": "ol:bl1:2026", "limit": 100})
+params = urlencode({"competition_id": "dfl:bundesliga:2026", "limit": 100})
 with urlopen(f"{base}/matches?{params}", timeout=10) as response:
     page = json.load(response)
 for match in page["items"]:
@@ -79,6 +80,8 @@ API рассчитан на один компьютер; доступ из се�
 В official_only=true запрос sync неофициальной лиги возвращает 422 с объяснением;
 sync официальной лиги возвращает 202, сохраняя cooldown. Настройки содержат official_only,
 диагностика — source_policy и состояние официального источника.
+`enabled_leagues` может хранить исторические shortcuts OpenLigaDB без строк каталога.
+PUT с другим отсутствующим shortcut возвращает 422; официальный sync от этого списка не зависит.
 
 # Английские лиги — 0.10.0
 
@@ -122,3 +125,31 @@ period/elapsed_minutes nullable, future score nullable. kickoff_at в UTC, sched
 collection_reason объясняет CAPTCHA/отсутствие адаптера. POST sync/reset РПЛ возвращает
 422 с этой причиной. Пустые результаты РПЛ не подтверждают отсутствие матчей.
 Схема БД/API матчей совместима; новые поля состояния необязательны для старых клиентов.
+
+## Контракт карточки — 0.13.2
+
+`GET /api/v1/matches` при `official_only=true` возвращает только официальные источники.
+Sky Sports и OpenLigaDB остаются в базе и видны, если настройка выключена.
+Обычный список и `GET /matches/{id}` по-прежнему скрывают карточку после `expires_at` (72 часа).
+
+`GET /api/v1/results?status=finished` отдаёт тот же `match.id` после этого срока.
+Архив хранит финал и отмену 180 дней от того же якоря и не продлевается повторным опросом.
+Уже удалённые до 0.13.2 финалы не восстанавливаются. В карточке архива есть `archive_until`.
+
+На каждой карточке присутствуют ключи, даже если значение неизвестно:
+
+- `scheduled_date`, `source_url`, `public_match_url` — `null`, если пусто;
+- `kickoff_precision`: `instant`, `date_only` или `unknown`; день без часа не становится полночью;
+- `score_scope`: `regulation`, `including_extra`, `including_penalties` или `unknown`;
+- `regular_home` и `regular_away` заполняются для финала только вместе с понятным составом счёта;
+- `independent_confirmations` — список, сейчас пустой. `result_verified=true` требует два разных источника;
+- `raw_status` — один статус источника либо `null`, не склейка флагов и не подпись времени.
+
+`/changes` принимает `competition_id`, в событии есть `content_hash`. Журнал хранится 7 дней.
+Курсор ниже `changes_floor` даёт HTTP 410 и требует полную синхронизацию.
+
+`/health/ready` содержит `collector_fresh` и `data_age_seconds`. Ответ `ok` и HTTP 200
+только когда worker недавно отмечался и самая новая карточка не старше двух самых длинных
+интервалов опроса. Иначе статус `stale` и HTTP 503. `/health/live` по-прежнему проверяет процесс.
+
+Коэффициенты и состав тиража этот API не выбирает. РПЛ по-прежнему отвечает 422 на sync и reset.

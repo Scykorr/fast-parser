@@ -64,13 +64,17 @@ def parse_page(html, division, year, week=None):
                       for side in ("home", "away")]
             if status == "finished" and None in scores:
                 raise SchemaError("DFL: нет итогового счета")
+            # fulltime is the published 90-minute component, separate from any unmapped live phase.
+            regulation = status == "finished"
             kickoff = parse_time(row.get("kickOff")) or planned if row.get("matchDateFixed") is True else None
             external = f"{year}:{key}"
             matches.append(Match(id="dfl:"+external, external_id=external, competition_id=comp["id"],
                 source=DFL_SOURCE, home_team=teams[0], away_team=teams[1],
                 kickoff_at=stamp(kickoff) if kickoff else None, scheduled_date=planned.astimezone(ZoneInfo("Europe/Berlin")).date().isoformat(),
-                status=status, score_home=scores[0], score_away=scores[1], raw_status=raw,
-                verification="official_source", source_url=page_url(division, year, current)))
+                status=status, score_home=scores[0], score_away=scores[1],
+                regular_home=scores[0] if regulation else None, regular_away=scores[1] if regulation else None,
+                score_scope="regulation" if regulation else None, raw_status=raw or None,
+                verification="official_source", source_url=page_url(division, year, current), public_match_url=None))
         return comp, matches, current, min(dates), max(dates)
     except (KeyError, TypeError, ValueError, AttributeError) as exc:
         raise SchemaError("DFL: изменился контракт календаря") from exc

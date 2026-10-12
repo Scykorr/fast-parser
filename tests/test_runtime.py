@@ -86,7 +86,12 @@ def test_api_csrf_names_filter_validation_and_expiration(tmp_path, comp):
         assert client.get("/").status_code == 200
         assert client.get("/docs").status_code == 200
         assert "/api/v1/matches" in client.get("/openapi.json").json()["paths"]
-        assert client.get("/health/ready").status_code == 200
+        ready = client.get("/health/ready")
+        assert ready.status_code == 503 and ready.json()["collector_fresh"] is False
+        assert "data_age_seconds" in ready.json()
+        shown = store.settings()
+        shown.official_only = False
+        store.save_settings(shown)
         assert client.get("/api/v1/countries").json()["items"][0]["id"] == "Германия"
         result = client.get("/api/v1/matches", params={"competition_id": comp["id"]}).json()
         assert result["items"][0]["home_team"]["name"] == "<script>"
@@ -106,6 +111,68 @@ def test_api_csrf_names_filter_validation_and_expiration(tmp_path, comp):
         store.upsert_matches([m], now)
         assert client.get("/api/v1/matches/ol:1").status_code == 404
         assert client.get("/api/v1/matches").json()["items"] == []
+
+
+def test_clean_official_settings_save_timezone_and_window(tmp_path):
+    """Default legacy shortcuts must not block a clean official installation."""
+    db_path = tmp_path / "clean.sqlite3"
+    seeded = create_app(db_path, start_worker=True)
+    store = seeded.state.store
+    competitions = store.competitions()
+    assert any(row["id"].startswith("ll:") for row in competitions)
+    assert any(row["id"].startswith("rpl:") for row in competitions)
+    assert not any(row["id"].startswith("ol:") for row in competitions)
+    settings = store.settings()
+    assert settings.official_only is True
+    assert settings.enabled_leagues == ["bl1", "bl2", "bl3", "pl", "la1", "ucl", "dfb"]
+    settings.timezone = "Asia/Yekaterinburg"
+    settings.lookback_days = 1
+    settings.active_windows = ["08:00-23:00"]
+    store.save_settings(settings)
+    saved = store.settings()
+    assert saved.timezone == "Asia/Yekaterinburg"
+    assert saved.lookback_days == 1
+    assert saved.active_windows == ["08:00-23:00"]
+    assert saved.enabled_leagues == ["bl1", "bl2", "bl3", "pl", "la1", "ucl", "dfb"]
+    assert saved.official_only is True
+    refreshed = store.competitions()
+    assert not any(row["id"].startswith("ol:") for row in refreshed)
+    official = [row for row in refreshed if row["id"].startswith(("ll:", "pl:", "efl:", "sa:", "sb:", "dfl:", "fnl:"))]
+    assert official and all(row["enabled"] == 0 for row in official)
+    assert store.due(utcnow().timestamp()) is None
+    settings.enabled_leagues = ["not-a-league"]
+    with pytest.raises(ValueError, match="Неизвестная лига"):
+        store.save_settings(settings)
+    assert store.settings().enabled_leagues == ["bl1", "bl2", "bl3", "pl", "la1", "ucl", "dfb"]
+    app = create_app(db_path, start_worker=False)
+    with TestClient(app) as client:
+        headers = {"Origin": "http://testserver", "X-CSRF-Token": app.state.csrf}
+        payload = client.get("/api/v1/settings").json()
+        payload["lookahead_days"] = 14
+        assert client.put("/api/v1/settings", json=payload, headers=headers).status_code == 200
+        assert client.get("/api/v1/settings").json()["lookahead_days"] == 14
+        payload["enabled_leagues"] = ["bl1", "missing-custom"]
+        assert client.put("/api/v1/settings", json=payload, headers=headers).status_code == 422
+        items = client.get("/api/v1/competitions").json()["items"]
+        official_id = next(row["id"] for row in items if row["id"].startswith("ll:"))
+        rpl_id = next(row["id"] for row in items if row["id"].startswith("rpl:"))
+        assert client.post(f"/api/v1/sync/{official_id}", headers=headers).status_code == 202
+        assert client.post(f"/api/v1/sync/{rpl_id}", headers=headers).status_code == 422
+
+
+def test_legacy_catalog_keeps_known_shortcut_and_rejects_unknown(store, comp):
+    settings = store.settings()
+    settings.timezone = "UTC"
+    store.save_settings(settings)
+    saved = store.settings()
+    assert saved.timezone == "UTC"
+    assert saved.enabled_leagues == ["bl1", "bl2", "bl3", "pl", "la1", "ucl", "dfb"]
+    assert {row["id"] for row in store.competitions() if row["enabled"]} == {comp["id"]}
+    settings.enabled_leagues = ["bl1", "not-a-league"]
+    with pytest.raises(ValueError, match="Неизвестная лига"):
+        store.save_settings(settings)
+    assert store.settings().enabled_leagues == ["bl1", "bl2", "bl3", "pl", "la1", "ucl", "dfb"]
+    assert {row["id"] for row in store.competitions() if row["enabled"]} == {comp["id"]}
 
 
 def test_invalid_batch_keeps_last_good_data(store, comp, openliga_row):

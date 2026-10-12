@@ -24,8 +24,8 @@ def sb(day='9 ottobre 2026', time='20:30', finished=False, week=6, year=2026):
     goals='<div class="gol-home">2</div><div class="gol-away">1</div>' if finished else '<div class="gol">20:30</div>'
     return f'''<select><option value="/seriebkt/calendario/{year}-{year+1}/stagione-regolare/{week}" selected>Giornata</option>
       <option value="/seriebkt/calendario/{year}-{year+1}/stagione-regolare/{week+1}">Next</option></select>
-      <div class="matchday-list"><div class="club-home"><div class="club-label"><span>Home</span><span>HOM</span></div></div>
-      <div class="club-away"><div class="club-label"><span>Away</span><span>AWA</span></div></div>
+      <div class="matchday-list"><div class="club-home"><img class="logo-club" src="https://cdn.example/legab.it/img/club/loghi/home.png"><div class="club-label"><span>Home</span><span>HOM</span></div></div>
+      <div class="club-away"><img class="logo-club" src="https://cdn.example/legab.it/img/club/loghi/away.png"><div class="club-label"><span>Away</span><span>AWA</span></div></div>
       <div class="stato {state}"><div class="stato-label">{'Risultato' if finished else 'Ore'}</div>
       <span class="visually-hidden">venerdì, {day}, Home - Away, ore: {time}</span>{goals}</div>
       <a data-match-id="b1" href="/seriebkt/partita/{year}-{year+1}/stagione-regolare/home-vs-away"></a></div>'''
@@ -64,13 +64,15 @@ def test_sa_real_date_only_z_format_does_not_quarantine_valid_round(now):
 @pytest.mark.parametrize('day,year,expected',[('9 ottobre 2026',2026,'2026-10-09T18:30:00+00:00'),('9 gennaio 2027',2026,'2027-01-09T19:30:00+00:00')])
 def test_sb_rome_timezone_in_summer_and_winter(day,year,expected):
     comp,rows,week,available,first,last=parse_sb(sb(day=day,year=year),str(year),6)
-    assert rows[0].kickoff_at==expected and rows[0].home_team['name']=='Home'
+    assert rows[0].kickoff_at==expected and rows[0].home_team=={'id':'home','name':'Home'}
+    assert rows[0].raw_status is None and rows[0].public_match_url.endswith('/home-vs-away')
     assert rows[0].score_home is None and rows[0].status=='scheduled' and week==6
     assert comp['country']=='Италия' and available=={6,7}
 
 def test_sb_final_requires_score_and_unknown_clock_retains_date():
     _,rows,*_=parse_sb(sb(finished=True),'2026',6)
     assert rows[0].status=='finished' and rows[0].score_home==2 and rows[0].score_away==1
+    assert rows[0].raw_status=='Risultato' and rows[0].score_scope=='regulation' and rows[0].regular_home==2
     _,rows,*_=parse_sb(sb(time='TBD'),'2026',6)
     assert rows[0].kickoff_at is None and rows[0].scheduled_date=='2026-10-09'
     with pytest.raises(SchemaError):parse_sb(sb(finished=True).replace('class="gol-away"','class="gone"'),'2026',6)

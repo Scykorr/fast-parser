@@ -1,8 +1,13 @@
 """Free public services used by the official Premier League and EFL websites."""
+import re
 from urllib.parse import urlencode, urlparse, parse_qs
 from datetime import timedelta
+from zoneinfo import ZoneInfo
 from .adapters import SchemaError
 from .domain import Match, parse_time, stamp
+
+LONDON = ZoneInfo("Europe/London")
+EFL_CREST = re.compile(r"^/t(\d+)\.png$")
 
 from .sources import PL_SOURCE, EFL_SOURCE, OFFICIAL_SOURCES, OFFICIAL_PREFIXES
 PL_BASE = "https://fantasy.premierleague.com/api"
@@ -51,12 +56,17 @@ def parse_pl(rows, reference):
             kickoff = parse_time(r.get("kickoff_time"))
             if kickoff and kickoff.year-int(kickoff.month < 7) != int(year):
                 raise SchemaError("Premier League: дата вне сезона")
+            # League score is the 90-minute result. pulse_id is not a public match link.
+            scope = "regulation" if status == "finished" else None
             matches.append(Match(id=f"pl:{year}:{r['id']}", external_id=f"{year}:{r['id']}",
                 competition_id=comp["id"], source=PL_SOURCE, home_team=reference["teams"][str(r["team_h"])],
                 away_team=reference["teams"][str(r["team_a"])], kickoff_at=stamp(kickoff) if kickoff else None,
-                status=status, score_home=scores[0], score_away=scores[1], elapsed_minutes=minutes,
-                raw_status=f"finished={r['finished']};started={r['started']};provisional={r.get('finished_provisional')}",
-                verification="official_source", source_url=PL_BASE+"/fixtures/"))
+                scheduled_date=kickoff.astimezone(LONDON).date().isoformat() if kickoff else None,
+                status=status, score_home=scores[0], score_away=scores[1],
+                regular_home=scores[0] if scope == "regulation" else None,
+                regular_away=scores[1] if scope == "regulation" else None,
+                score_scope=scope, elapsed_minutes=minutes, raw_status=None,
+                verification="official_source", source_url=PL_BASE+"/fixtures/", public_match_url=None))
         return comp, matches
     except (KeyError, TypeError, ValueError) as exc:
         raise SchemaError("Premier League: изменился контракт матчей") from exc
@@ -77,6 +87,15 @@ def safe_next(url, expected):
         raise SchemaError("EFL: небезопасная или чужая ссылка следующей страницы")
     return url
 
+def efl_team(team):
+    crest = urlparse(team.get("crest") or "")
+    token = EFL_CREST.fullmatch(crest.path or "")
+    name = str(team.get("name") or "").strip()
+    if crest.scheme != "https" or crest.netloc != "crests.gc.eflservices.co.uk" or not token or not name:
+        raise SchemaError("EFL: нет устойчивого id команды")
+    return {"id": "t" + token.group(1), "name": name}
+
+
 def parse_efl(data, year, url):
     try:
         rows = data["data"]
@@ -94,18 +113,33 @@ def parse_efl(data, year, url):
             if kickoff and kickoff.year-int(kickoff.month < 7) != int(year):
                 raise SchemaError("EFL: неверный сезон даты")
             status = {"PreMatch":"scheduled", "FullTime":"finished"}.get(a["matchPeriod"],"unknown")
-            teams = [{"name":a[k]["name"].strip()} for k in ("homeTeam","awayTeam")]
+            teams = [efl_team(a[k]) for k in ("homeTeam","awayTeam")]
             scores = [score(a[k].get("score")) for k in ("homeTeam","awayTeam")]
-            if any(not t["name"] for t in teams) or status == "finished" and None in scores:
+            penalties = [a[k].get("penaltyScore") for k in ("homeTeam","awayTeam")]
+            if status == "finished" and None in scores:
                 raise SchemaError("EFL: нет команд или итогового счета")
+            # NormalResult is the published 90-minute score. A shootout is not relabelled as regulation.
+            regulation = status == "finished" and a.get("resultType") == "NormalResult" and all(value is None for value in penalties)
+            day = None
+            if kickoff and not a.get("TBC"):
+                day = kickoff.astimezone(LONDON).date().isoformat()
+            elif value:
+                day = value[:10]
+                kickoff = None
             matches.append(Match(id=f"efl:{year}:{r['id']}", external_id=f"{year}:{r['id']}", competition_id=comp["id"],
-                source=EFL_SOURCE, home_team=teams[0], away_team=teams[1], kickoff_at=stamp(kickoff) if kickoff and not a.get("TBC") else None,
-                status=status, score_home=scores[0], score_away=scores[1], raw_status=a["matchPeriod"],
-                verification="official_source", source_url=url))
+                source=EFL_SOURCE, home_team=teams[0], away_team=teams[1],
+                kickoff_at=stamp(kickoff) if kickoff and not a.get("TBC") else None, scheduled_date=day,
+                status=status, score_home=scores[0], score_away=scores[1],
+                regular_home=scores[0] if regulation else None, regular_away=scores[1] if regulation else None,
+                score_scope="regulation" if regulation else "unknown" if status == "finished" else None,
+                raw_status=a["matchPeriod"] or None, verification="official_source",
+                source_url=url, public_match_url=None))
         nxt = safe_next(data.get("links",{}).get("next"),url)
         total = data.get("meta",{}).get("totalCount",len(rows))
         if total > len(rows) and not nxt and "page.number" not in parse_qs(urlparse(url).query):
             raise SchemaError("EFL: неполная первая страница без продолжения")
         return comp, matches, nxt
+    except SchemaError:
+        raise
     except (KeyError, TypeError, ValueError) as exc:
         raise SchemaError("EFL: изменился контракт матчей") from exc

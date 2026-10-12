@@ -20,7 +20,9 @@ def pl(now, **changes):
 
 def efl(now, **changes):
     attrs=dict(kickOffDateUTC=now.strftime('%Y-%m-%d %H:%M:%S'),TBC=None,competitionID=10,
-               matchPeriod='FullTime',homeTeam=dict(name='Home',score=3),awayTeam=dict(name='Away',score=1))
+               matchPeriod='FullTime',resultType='NormalResult',
+               homeTeam=dict(name='Home',score=3,crest='https://crests.gc.eflservices.co.uk/t1.png'),
+               awayTeam=dict(name='Away',score=1,crest='https://crests.gc.eflservices.co.uk/t2.png'))
     attrs.update(changes)
     return dict(data=[dict(type='match',id='g1',attributes=attrs)],meta=dict(totalCount=1,count=1),links={})
 
@@ -29,6 +31,8 @@ def test_pl_names_season_final_and_live_without_invented_end(now):
     comp, rows=parse_pl([pl(now)],ref)
     assert comp['country']=='Англия' and rows[0].home_team['name']=='Team 1'
     assert rows[0].id=='pl:2026:1' and rows[0].finished_at is None and rows[0].elapsed_minutes is None
+    assert rows[0].scheduled_date=='2026-10-06' and rows[0].raw_status is None
+    assert rows[0].score_scope=='regulation' and rows[0].regular_home==2 and rows[0].public_match_url is None
     _,live=parse_pl([pl(now,finished=False,finished_provisional=False,minutes=32)],ref)
     assert live[0].status=='live' and live[0].elapsed_minutes==32 and live[0].period is None
     _,provisional=parse_pl([pl(now,finished=False)],ref)
@@ -48,7 +52,9 @@ def test_efl_explicit_utc_names_scores_tbc_unknown(now):
     url=efl_url('2026',now,now+timedelta(days=7))
     comp,rows,nxt=parse_efl(efl(now),'2026',url)
     assert comp['country']=='Англия' and rows[0].kickoff_at==stamp(now)
-    assert rows[0].score_home==3 and rows[0].source_url==url and nxt is None
+    assert rows[0].score_home==3 and rows[0].source_url==url and rows[0].public_match_url is None and nxt is None
+    assert rows[0].home_team['id']=='t1' and rows[0].away_team['id']=='t2'
+    assert rows[0].score_scope=='regulation' and rows[0].regular_away==1 and rows[0].scheduled_date
     _,rows,_=parse_efl(efl(now,TBC=True,matchPeriod='NewStatus'),'2026',url)
     assert rows[0].status=='unknown' and rows[0].kickoff_at is None and rows[0].elapsed_minutes is None
     with pytest.raises(SchemaError):parse_efl(efl(now,competitionID=11),'2026',url)

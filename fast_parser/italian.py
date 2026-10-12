@@ -1,7 +1,7 @@
 """Official public Lega Serie A JSON and server-rendered Lega B calendar."""
 import re
 from datetime import datetime, date as calendar_date
-from urllib.parse import quote
+from urllib.parse import quote, urlparse
 from zoneinfo import ZoneInfo
 from bs4 import BeautifulSoup
 from .adapters import SchemaError
@@ -14,6 +14,7 @@ SA_COMP = "serie-a::Football_Competition::ec93b94f74294dc98ab5bcfd67fc0d88"
 SA_SEASONS = SA_BASE+"/competitions/"+quote(SA_COMP,safe="")+"/seasons?locale=it-IT"
 SB_BASE = "https://www.legab.it"
 MONTHS = {v:i+1 for i,v in enumerate(['gennaio','febbraio','marzo','aprile','maggio','giugno','luglio','agosto','settembre','ottobre','novembre','dicembre'])}
+SB_LOGO = re.compile(r"/legab\.it/img/club/loghi/([a-z0-9-]+)\.png$")
 
 def catalog(year):
     return [dict(id=f"sa:serie-a:{year}",shortcut="serie-a",season=str(year),name="Серия A · Lega Serie A",country="Италия",category="league"),
@@ -58,12 +59,18 @@ def parse_sa(data,year,season):
             scores=[score(r.get('homeScorePush')),score(r.get('awayScorePush'))]
             if status=='finished' and None in scores:
                 raise SchemaError("Serie A: отсутствует итоговый счет")
+            phase=str(r.get('phase') or '')
+            regulation=status=='finished' and 'EXTRA' not in phase.upper() and 'PENAL' not in phase.upper()
             external=f"{year}:{r['matchId']}"
+            precise=kickoff if kickoff and not r.get('isUnknownKickOffTime') else None
             matches.append(Match(id='sa:'+external,external_id=external,competition_id=comp['id'],source=SA_SOURCE,
-                home_team=teams[0],away_team=teams[1],kickoff_at=stamp(kickoff) if kickoff and not r.get('isUnknownKickOffTime') else None,
-                status=status,score_home=scores[0],score_away=scores[1],raw_status=r['status']+'/'+str(r.get('phase')),
+                home_team=teams[0],away_team=teams[1],kickoff_at=stamp(precise) if precise else None,
+                status=status,score_home=scores[0],score_away=scores[1],
+                regular_home=scores[0] if regulation else None,regular_away=scores[1] if regulation else None,
+                score_scope='regulation' if regulation else 'unknown' if status=='finished' else None,
+                raw_status=r['status'] or None,
                 scheduled_date=day.isoformat() if day else None,
-                verification='official_source',source_url=sa_url(season)))
+                verification='official_source',source_url=sa_url(season),public_match_url=None))
         return comp,matches
     except (KeyError,TypeError,ValueError) as exc:
         raise SchemaError("Serie A: изменился контракт матчей") from exc
@@ -95,9 +102,13 @@ def parse_sb(html,year,week=None):
             teams=[]
             for side in ('home','away'):
                 name=card.select_one(f'.club-{side} .club-label span')
-                if name is None or not name.get_text(strip=True):
-                    raise SchemaError("Lega B: отсутствует название команды")
-                teams.append(dict(name=name.get_text(strip=True)))
+                logo=card.select_one(f'.club-{side} img.logo-club')
+                token=SB_LOGO.search(urlparse(logo.get('src','') if logo else '').path)
+                if name is None or not name.get_text(strip=True) or not token:
+                    raise SchemaError("Lega B: отсутствует название или устойчивый id команды")
+                teams.append(dict(id=token.group(1),name=name.get_text(strip=True)))
+            if teams[0]['id']==teams[1]['id']:
+                raise SchemaError("Lega B: одинаковый id команд")
             label=card.select_one('.stato .visually-hidden')
             if label is None:
                 raise SchemaError("Lega B: отсутствует явная дата")
@@ -114,6 +125,8 @@ def parse_sb(html,year,week=None):
             state=card.select_one('.stato');state_label=state.select_one('.stato-label')
             raw=state_label.get_text(' ',strip=True) if state_label else ''
             status='finished' if 'giocata' in state.get('class',[]) and raw=='Risultato' else 'scheduled' if raw=='Ore' else 'unknown'
+            # "Ore" is the clock label, not a match status.
+            raw_status=None if raw=='Ore' or re.fullmatch(r'\d{1,2}:\d{2}',raw) else raw or None
             scores=[]
             for side in ('home','away'):
                 tag=state.select_one('.gol-'+side)
@@ -124,10 +137,17 @@ def parse_sb(html,year,week=None):
             if status=='finished' and None in scores:
                 raise SchemaError("Lega B: отсутствует итоговый счет")
             external=f'{year}:{key}'
+            public=link['href'] if link['href'].startswith('/') else None
             matches.append(Match(id='sb:'+external,external_id=external,competition_id=comp['id'],source=SB_SOURCE,
                 home_team=teams[0],away_team=teams[1],kickoff_at=stamp(kickoff) if kickoff else None,
                 scheduled_date=local.date().isoformat(),
-                status=status,score_home=scores[0],score_away=scores[1],raw_status=raw,verification='official_source',source_url=sb_url(year,current)))
+                status=status,score_home=scores[0],score_away=scores[1],
+                regular_home=scores[0] if status=='finished' else None,regular_away=scores[1] if status=='finished' else None,
+                score_scope='regulation' if status=='finished' else None,
+                raw_status=raw_status,verification='official_source',source_url=sb_url(year,current),
+                public_match_url=(SB_BASE+public) if public else None))
         return comp,matches,current,available,min(dates),max(dates)
+    except SchemaError:
+        raise
     except (KeyError,TypeError,ValueError) as exc:
         raise SchemaError("Lega B: изменился календарь") from exc

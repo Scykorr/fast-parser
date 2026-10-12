@@ -7,10 +7,13 @@ from contextlib import contextmanager
 from datetime import timedelta
 from pathlib import Path
 
-from .config import Settings
-from .domain import Match, parse_time, stamp, utcnow
+from .config import LEGACY_ENABLED_LEAGUES, Settings
+from .domain import Match, content_hash, parse_time, prepare_match, present_match, stamp, utcnow
 from .verification import CoverageVerification
 from .english import OFFICIAL_SOURCES
+
+RESULTS_ARCHIVE_DAYS = 180
+HEARTBEAT_FRESH_SECONDS = 30
 
 
 class Store:
@@ -21,9 +24,9 @@ class Store:
         path.parent.mkdir(parents=True, exist_ok=True)
         with self.connect() as db:
             version = db.execute("PRAGMA user_version").fetchone()[0]
-            if version > 3:
+            if version > 4:
                 raise ValueError("База создана более новой версией приложения")
-            if version in {1, 2}:
+            if version in {1, 2, 3}:
                 backup_path = path.with_suffix(f".v{version}.bak")
                 with sqlite3.connect(backup_path) as backup:
                     db.backup(backup)
@@ -51,13 +54,37 @@ class Store:
                 CREATE TABLE IF NOT EXISTS leases(name TEXT PRIMARY KEY,owner TEXT NOT NULL,until REAL NOT NULL);
                 CREATE TABLE IF NOT EXISTS audit(id INTEGER PRIMARY KEY,at TEXT NOT NULL,kind TEXT NOT NULL,detail TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS changes(seq INTEGER PRIMARY KEY AUTOINCREMENT,
-                    at TEXT NOT NULL, match_id TEXT NOT NULL, kind TEXT NOT NULL);
+                    at TEXT NOT NULL, match_id TEXT NOT NULL, kind TEXT NOT NULL,
+                    competition_id TEXT, content_hash TEXT);
                 CREATE INDEX IF NOT EXISTS changes_at ON changes(at);
+                CREATE TABLE IF NOT EXISTS results(
+                    id TEXT PRIMARY KEY, competition_id TEXT NOT NULL, source TEXT NOT NULL, kickoff_at TEXT,
+                    status TEXT NOT NULL, archive_until TEXT NOT NULL, payload TEXT NOT NULL);
+                CREATE INDEX IF NOT EXISTS results_order ON results(competition_id, COALESCE(kickoff_at,'9999'), id);
+                CREATE INDEX IF NOT EXISTS results_until ON results(archive_until);
                 CREATE TABLE IF NOT EXISTS coverage_verification(
                     competition_id TEXT PRIMARY KEY REFERENCES competitions(id),
                     updated_at TEXT NOT NULL, payload TEXT NOT NULL);
-                PRAGMA user_version=3;
+                PRAGMA user_version=4;
             """)
+            columns = {row[1] for row in db.execute("PRAGMA table_info(changes)")}
+            if "competition_id" not in columns:
+                db.execute("ALTER TABLE changes ADD COLUMN competition_id TEXT")
+            if "content_hash" not in columns:
+                db.execute("ALTER TABLE changes ADD COLUMN content_hash TEXT")
+            db.execute("CREATE INDEX IF NOT EXISTS changes_competition ON changes(competition_id, seq)")
+            db.execute("""UPDATE changes SET competition_id=(
+                SELECT competition_id FROM matches WHERE matches.id=changes.match_id)
+                WHERE competition_id IS NULL""")
+            for row in db.execute("SELECT payload FROM matches WHERE status IN ('finished','cancelled')"):
+                stored = json.loads(row[0])
+                if not stored.get("archive_until"):
+                    anchor = parse_time(stored.get("finished_at")) or parse_time(stored.get("first_observed_finished_at")) or utcnow()
+                    stored["archive_until"] = stamp(anchor + timedelta(days=RESULTS_ARCHIVE_DAYS))
+                db.execute("""INSERT OR IGNORE INTO results(id,competition_id,source,kickoff_at,status,archive_until,payload)
+                    VALUES(?,?,?,?,?,?,?)""",
+                    (stored["id"], stored["competition_id"], stored["source"], stored.get("kickoff_at"),
+                     stored["status"], stored["archive_until"], json.dumps(stored, ensure_ascii=False)))
             if not db.execute("SELECT 1 FROM metadata WHERE key='settings'").fetchone():
                 db.execute("INSERT INTO metadata VALUES('settings',?)", (Settings().model_dump_json(),))
 
@@ -91,7 +118,10 @@ class Store:
     def save_settings(self, settings: Settings):
         with self.connect() as db:
             known = {r[0] for r in db.execute("SELECT DISTINCT shortcut FROM competitions")}
-            if known and not set(settings.enabled_leagues) <= known:
+            # Absent historical shortcuts are a stored legacy preference, not a typo.
+            # A shortcut outside that set must already exist in the catalog.
+            missing = set(settings.enabled_leagues) - known
+            if known and not missing <= set(LEGACY_ENABLED_LEAGUES):
                 raise ValueError("Неизвестная лига: сначала обновите каталог")
             db.execute("UPDATE metadata SET value=? WHERE key='settings'", (settings.model_dump_json(),))
             db.execute("UPDATE competitions SET enabled=0")
@@ -203,6 +233,10 @@ class Store:
         count = 0
         with self.connect() as db:
             for item in matches:
+                if not prepare_match(item):
+                    db.execute("INSERT INTO audit(at,kind,detail) VALUES(?,?,?)",
+                               (stamp(now), "rejected_missing_team_id", item.id))
+                    continue
                 previous = db.execute("SELECT payload FROM matches WHERE id=?", (item.id,)).fetchone()
                 old = json.loads(previous[0]) if previous else None
                 marker = db.execute("SELECT 1 FROM markers WHERE id=?", (item.id,)).fetchone()
@@ -230,24 +264,48 @@ class Store:
                     item.expires_at = stamp(anchor + timedelta(hours=72))
                     if old and old.get("expires_at"):
                         item.expires_at = min(item.expires_at, old["expires_at"])
+                    archive = stamp(anchor + timedelta(days=RESULTS_ARCHIVE_DAYS))
+                    previous_archive = (old or {}).get("archive_until")
+                    item.archive_until = min(archive, previous_archive) if previous_archive else archive
+                    self._save_result(db, item)
                     if parse_time(item.expires_at) <= now:
                         if old:
-                            db.execute("INSERT INTO changes(at,match_id,kind) VALUES(?,?, 'deleted')", (stamp(now), item.id))
+                            self._change(db, now, item, "deleted")
                         db.execute("DELETE FROM matches WHERE id=?", (item.id,))
                         db.execute("INSERT OR REPLACE INTO markers VALUES(?,?)", (item.id, now.timestamp()))
                         continue
+                else:
+                    item.archive_until = None
+                    db.execute("DELETE FROM results WHERE id=?", (item.id,))
                 payload = json.dumps(item.to_dict(), ensure_ascii=False)
                 db.execute("""INSERT INTO matches VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET
                     competition_id=excluded.competition_id,kickoff_at=excluded.kickoff_at,status=excluded.status,
                     expires_at=excluded.expires_at,observed_at=excluded.observed_at,payload=excluded.payload""",
                     (item.id, item.competition_id, item.source, item.external_id, item.kickoff_at, item.status, item.expires_at, item.observed_at, payload))
-                db.execute("INSERT INTO changes(at,match_id,kind) VALUES(?,?, 'upsert')", (stamp(now), item.id))
+                self._change(db, now, item, "upsert")
                 count += 1
         return count
 
-    def matches(self, cid=None, status=None, start=None, end=None, cursor=None, limit=100, now=None):
+    def _change(self, db, now, item: Match, kind: str):
+        payload = item.to_dict()
+        db.execute("INSERT INTO changes(at,match_id,kind,competition_id,content_hash) VALUES(?,?,?,?,?)",
+                   (stamp(now), item.id, kind, item.competition_id, content_hash(payload)))
+
+    def _save_result(self, db, item: Match):
+        db.execute("""INSERT INTO results(id,competition_id,source,kickoff_at,status,archive_until,payload)
+            VALUES(?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET
+            competition_id=excluded.competition_id,source=excluded.source,kickoff_at=excluded.kickoff_at,
+            status=excluded.status,archive_until=excluded.archive_until,payload=excluded.payload""",
+            (item.id, item.competition_id, item.source, item.kickoff_at, item.status,
+             item.archive_until, json.dumps(item.to_dict(), ensure_ascii=False)))
+
+    def matches(self, cid=None, status=None, start=None, end=None, cursor=None, limit=100, now=None, official=False):
         now_s = stamp(now or utcnow())
         clauses, args = ["(expires_at IS NULL OR expires_at>?)"], [now_s]
+        if official:
+            names = sorted(OFFICIAL_SOURCES)
+            clauses.append("source IN (" + ",".join("?" * len(names)) + ")")
+            args.extend(names)
         for column, value, op in [("competition_id", cid, "="), ("status", status, "="), ("kickoff_at", start, ">="), ("kickoff_at", end, "<")]:
             if value:
                 if column == "kickoff_at":
@@ -283,10 +341,14 @@ class Store:
         with self.connect() as db:
             if dry_run:
                 return db.execute("SELECT COUNT(*) FROM matches WHERE expires_at<=?", (stamp(now),)).fetchone()[0]
-            ids = db.execute("SELECT id FROM matches WHERE expires_at<=? LIMIT 1000", (stamp(now),)).fetchall()
-            db.executemany("INSERT OR REPLACE INTO markers VALUES(?,?)", [(r[0], now.timestamp()) for r in ids])
-            db.executemany("INSERT INTO changes(at,match_id,kind) VALUES(?,?, 'deleted')", [(stamp(now), r[0]) for r in ids])
-            db.executemany("DELETE FROM matches WHERE id=?", [(r[0],) for r in ids])
+            ids = db.execute("SELECT id,payload FROM matches WHERE expires_at<=? LIMIT 1000", (stamp(now),)).fetchall()
+            db.executemany("INSERT OR REPLACE INTO markers VALUES(?,?)", [(r["id"], now.timestamp()) for r in ids])
+            for row in ids:
+                stored = json.loads(row["payload"])
+                db.execute("INSERT INTO changes(at,match_id,kind,competition_id,content_hash) VALUES(?,?,?,?,?)",
+                           (stamp(now), stored["id"], "deleted", stored.get("competition_id"), content_hash(stored)))
+            db.executemany("DELETE FROM matches WHERE id=?", [(r["id"],) for r in ids])
+            db.execute("DELETE FROM results WHERE archive_until<=?", (stamp(now),))
             cutoff = stamp(now - timedelta(days=7))
             removed = db.execute("SELECT MAX(seq) FROM changes WHERE at<?", (cutoff,)).fetchone()[0]
             if removed:
@@ -295,7 +357,7 @@ class Store:
             db.execute("DELETE FROM markers WHERE last_seen<?", ((now - timedelta(days=180)).timestamp(),))
             db.execute("DELETE FROM audit WHERE at<?", (stamp(now - timedelta(days=7)),))
             deleted = len(ids)
-        for version in (1, 2):
+        for version in (1, 2, 3):
             backup = self.path.with_suffix(f".v{version}.bak")
             if backup.exists() and backup.stat().st_mtime <= now.timestamp() - 72 * 3600:
                 backup.unlink()
@@ -317,34 +379,89 @@ class Store:
         with self.connect() as db:
             return {r[0] for r in db.execute("SELECT id FROM matches WHERE competition_id=? AND status NOT IN ('finished','cancelled')", (cid,))}
 
+    def results(self, cid=None, status="finished", cursor=None, limit=100, now=None, official=False):
+        now_s = stamp(now or utcnow())
+        clauses, args = ["archive_until>?"], [now_s]
+        if official:
+            names = sorted(OFFICIAL_SOURCES)
+            clauses.append("source IN (" + ",".join("?" * len(names)) + ")")
+            args.extend(names)
+        if cid:
+            clauses.append("competition_id=?")
+            args.append(cid)
+        if status:
+            clauses.append("status=?")
+            args.append(status)
+        if cursor:
+            try:
+                key, mid = json.loads(base64.urlsafe_b64decode(cursor.encode()))
+                if not isinstance(key, str) or not isinstance(mid, str):
+                    raise ValueError()
+            except (ValueError, TypeError, UnicodeError) as exc:
+                raise ValueError("Неверный cursor") from exc
+            clauses.append("(COALESCE(kickoff_at,'9999'),id)>(?,?)")
+            args.extend([key, mid])
+        with self.connect() as db:
+            rows = db.execute("SELECT payload FROM results WHERE " + " AND ".join(clauses) + " ORDER BY COALESCE(kickoff_at,'9999'),id LIMIT ?", [*args, limit + 1]).fetchall()
+        settings, sources = self.settings(), {}
+        data = [self.decorate(json.loads(r[0]), now=now, settings=settings, sources=sources) for r in rows[:limit]]
+        token = base64.urlsafe_b64encode(json.dumps([data[-1]["kickoff_at"] or "9999", data[-1]["id"]]).encode()).decode() if len(rows) > limit else None
+        return {"items": data, "next_cursor": token, "archive_days": RESULTS_ARCHIVE_DAYS}
+
+    def readiness(self, now=None):
+        now = now or utcnow()
+        settings = self.settings()
+        heartbeat = self.get_meta("worker_heartbeat")
+        checked = parse_time(heartbeat) if heartbeat else None
+        heartbeat_age = max(0, (now - checked).total_seconds()) if checked else None
+        collector_fresh = heartbeat_age is not None and heartbeat_age <= HEARTBEAT_FRESH_SECONDS
+        with self.connect() as db:
+            latest = db.execute("SELECT MAX(observed_at) FROM matches").fetchone()[0]
+        observed = parse_time(latest) if latest else None
+        data_age = max(0, int((now - observed).total_seconds())) if observed else None
+        limit = max(settings.fixtures_interval_seconds, settings.results_interval_seconds,
+                    settings.live_interval_seconds, settings.final_recheck_interval_seconds) * 2
+        data_fresh = data_age is None or data_age <= limit
+        return {"status": "ok" if collector_fresh and data_fresh else "stale", "database": "ready",
+                "collector_fresh": collector_fresh, "data_age_seconds": data_age}
+
     def decorate(self, item, now=None, settings=None, sources=None):
         now = now or utcnow()
         settings = settings or self.settings()
         sources = sources if sources is not None else {}
+        item = present_match(item)
         if item["source"] not in sources:
             sources[item["source"]] = self.source(item["source"])
         state = sources[item["source"]]
-        interval = (settings.live_interval_seconds if item["status"] in {"live", "paused"}
-                    else settings.final_recheck_interval_seconds if item["status"] in {"finished", "cancelled"}
+        stored_status = item["status"]
+        interval = (settings.live_interval_seconds if stored_status in {"live", "paused"}
+                    else settings.final_recheck_interval_seconds if stored_status in {"finished", "cancelled"}
                     else settings.results_interval_seconds if parse_time(item.get("kickoff_at")) and parse_time(item["kickoff_at"]) <= now
                     else settings.fixtures_interval_seconds)
         checked = parse_time(item.get("observed_at"))
         age = max(0, (now - checked).total_seconds()) if checked else None
+        stale = age is None or age > interval * 2 or state["state"] != "closed"
+        if stored_status in {"live", "paused"} and stale:
+            item["status"] = "unknown"
         item.update(last_checked_at=item.get("observed_at"), freshness_age_seconds=age,
                     official_source=item["source"] in OFFICIAL_SOURCES,
                     source_role="primary" if item["source"] in OFFICIAL_SOURCES else "legacy_unofficial",
-                    is_stale=age is None or age > interval * 2 or state["state"] != "closed",
-                    source_state=state["state"], freshness_threshold_seconds=interval * 2)
+                    is_stale=stale, source_state=state["state"], freshness_threshold_seconds=interval * 2)
         return item
 
-    def changes(self, after=0, limit=100, now=None):
+    def changes(self, after=0, limit=100, now=None, competition_id=None):
         now = now or utcnow()
         with self.connect() as db:
             floor_row = db.execute("SELECT value FROM metadata WHERE key='changes_floor'").fetchone()
             floor = int(floor_row[0]) if floor_row else 0
             if after < floor:
                 raise ValueError("Курсор изменений истёк: выполните полную синхронизацию")
-            rows = db.execute("SELECT * FROM changes WHERE seq>? ORDER BY seq LIMIT ?", (after, limit + 1)).fetchall()
+            query = "SELECT * FROM changes WHERE seq>?"
+            args = [after]
+            if competition_id:
+                query += " AND competition_id=?"
+                args.append(competition_id)
+            rows = db.execute(query + " ORDER BY seq LIMIT ?", [*args, limit + 1]).fetchall()
             watermark = db.execute("SELECT seq FROM sqlite_sequence WHERE name='changes'").fetchone()
             ids = list({row["match_id"] for row in rows[:limit]})
             payloads = {}
@@ -361,6 +478,8 @@ class Store:
             match = self.decorate(dict(payload), now, settings, sources) if payload else None
             event["kind"] = "upsert" if match else "deleted"
             event["match"] = match
+            if match:
+                event["content_hash"] = content_hash(match)
             items.append(event)
         return {"items": items, "next_after": items[-1]["seq"] if items else after,
                 "has_more": len(rows) > limit, "watermark": watermark[0] if watermark else 0,

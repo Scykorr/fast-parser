@@ -133,14 +133,26 @@ def create_app(db_path: Path | None = None, start_worker=True) -> FastAPI:
         except ValueError as exc:
             raise HTTPException(422, str(exc)) from exc
         try:
-            return store.matches(competition_id, status, start, end, cursor, limit)
+            return store.matches(competition_id, status, start, end, cursor, limit,
+                                  official=store.settings().official_only)
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from exc
+
+    @app.get("/api/v1/results")
+    def results(competition_id: str | None = None, status: str = "finished", cursor: str | None = None,
+                limit: int = Query(default=100, ge=1, le=200)):
+        if status not in {"finished", "cancelled"}:
+            raise HTTPException(422, "Архив хранит только finished и cancelled")
+        try:
+            return store.results(competition_id, status, cursor, limit, official=store.settings().official_only)
         except ValueError as exc:
             raise HTTPException(422, str(exc)) from exc
 
     @app.get("/api/v1/changes")
-    def changes(after: int = Query(default=0, ge=0), limit: int = Query(default=100, ge=1, le=200)):
+    def changes(after: int = Query(default=0, ge=0), limit: int = Query(default=100, ge=1, le=200),
+                competition_id: str | None = None):
         try:
-            return store.changes(after, limit)
+            return store.changes(after, limit, competition_id=competition_id)
         except ValueError as exc:
             raise HTTPException(410, str(exc)) from exc
 
@@ -233,8 +245,8 @@ def create_app(db_path: Path | None = None, start_worker=True) -> FastAPI:
 
     @app.get("/health/ready")
     def ready():
-        store.settings()
-        return {"status": "ok", "database": "ready"}
+        body = store.readiness()
+        return JSONResponse(body, status_code=200 if body["status"] == "ok" else 503)
 
     @app.get("/metrics", response_class=PlainTextResponse)
     def metrics():

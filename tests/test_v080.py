@@ -82,7 +82,7 @@ def test_v1_migration_backup_and_future_schema_rejected(tmp_path):
     migrated = Store(path)
     assert path.with_suffix(".v1.bak").exists()
     with migrated.connect() as db:
-        assert db.execute("PRAGMA user_version").fetchone()[0] == 3
+        assert db.execute("PRAGMA user_version").fetchone()[0] == 4
         db.execute("PRAGMA user_version=99")
     with pytest.raises(ValueError, match="новой"):
         Store(path)

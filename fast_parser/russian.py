@@ -86,8 +86,10 @@ def parse_page(data, year, season, month, calendar_year, offset=0):
             matches.append(Match(id="fnl:"+external,external_id=external,competition_id=comp["id"],
                 source=FNL_SOURCE,home_team=teams[0],away_team=teams[1],kickoff_at=stamp(kickoff) if kickoff else None,
                 scheduled_date=day.isoformat() if day else None,status=status,score_home=scores[0],score_away=scores[1],
-                raw_status=raw+"/"+phase,period=period,elapsed_minutes=minute,
-                verification="official_source",source_url="https://fnl.pro/pari/matches"))
+                regular_home=scores[0] if status=="finished" else None,regular_away=scores[1] if status=="finished" else None,
+                score_scope="regulation" if status=="finished" else None,
+                raw_status=raw or None,period=period,elapsed_minutes=minute,
+                verification="official_source",source_url="https://fnl.pro/pari/matches",public_match_url=None))
         return comp,matches,(offset+PAGE_SIZE if offset+len(rows)<total else None)
     except (KeyError,TypeError,ValueError,AttributeError) as exc:
         raise SchemaError("ФНЛ: изменился контракт календаря") from exc
