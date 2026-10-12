@@ -6,9 +6,10 @@ import sqlite3
 from contextlib import contextmanager
 from datetime import timedelta
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 from .config import LEGACY_ENABLED_LEAGUES, Settings
-from .domain import Match, content_hash, parse_time, prepare_match, present_match, stamp, utcnow
+from .domain import ORGANIZER_ZONES, Match, content_hash, parse_time, prepare_match, present_match, stamp, utcnow
 from .verification import CoverageVerification
 from .english import OFFICIAL_SOURCES
 
@@ -299,13 +300,16 @@ class Store:
             (item.id, item.competition_id, item.source, item.kickoff_at, item.status,
              item.archive_until, json.dumps(item.to_dict(), ensure_ascii=False)))
 
-    def matches(self, cid=None, status=None, start=None, end=None, cursor=None, limit=100, now=None, official=False):
+    def matches(self, cid=None, status=None, start=None, end=None, cursor=None, limit=100, now=None, official=False, match_ids=None):
         now_s = stamp(now or utcnow())
         clauses, args = ["(expires_at IS NULL OR expires_at>?)"], [now_s]
         if official:
             names = sorted(OFFICIAL_SOURCES)
             clauses.append("source IN (" + ",".join("?" * len(names)) + ")")
             args.extend(names)
+        if match_ids:
+            clauses.append("id IN (" + ",".join("?" * len(match_ids)) + ")")
+            args.extend(match_ids)
         for column, value, op in [("competition_id", cid, "="), ("status", status, "="), ("kickoff_at", start, ">="), ("kickoff_at", end, "<")]:
             if value:
                 if column == "kickoff_at":
@@ -335,6 +339,11 @@ class Store:
         with self.connect() as db:
             r = db.execute("SELECT payload FROM matches WHERE id=? AND (expires_at IS NULL OR expires_at>?)", (mid, stamp(now or utcnow()))).fetchone()
             return self.decorate(json.loads(r[0]), now=now) if r else None
+
+    def in_archive(self, mid: str, now=None) -> bool:
+        with self.connect() as db:
+            row = db.execute("SELECT 1 FROM results WHERE id=? AND archive_until>?", (mid, stamp(now or utcnow()))).fetchone()
+            return row is not None
 
     def cleanup(self, now=None, dry_run=False) -> int:
         now = now or utcnow()
@@ -379,7 +388,7 @@ class Store:
         with self.connect() as db:
             return {r[0] for r in db.execute("SELECT id FROM matches WHERE competition_id=? AND status NOT IN ('finished','cancelled')", (cid,))}
 
-    def results(self, cid=None, status="finished", cursor=None, limit=100, now=None, official=False):
+    def results(self, cid=None, status="finished", cursor=None, limit=100, now=None, official=False, match_ids=None):
         now_s = stamp(now or utcnow())
         clauses, args = ["archive_until>?"], [now_s]
         if official:
@@ -389,6 +398,9 @@ class Store:
         if cid:
             clauses.append("competition_id=?")
             args.append(cid)
+        if match_ids:
+            clauses.append("id IN (" + ",".join("?" * len(match_ids)) + ")")
+            args.extend(match_ids)
         if status:
             clauses.append("status=?")
             args.append(status)
@@ -443,13 +455,27 @@ class Store:
         stale = age is None or age > interval * 2 or state["state"] != "closed"
         if stored_status in {"live", "paused"} and stale:
             item["status"] = "unknown"
+        elif stored_status == "scheduled" and stale and self._scheduled_is_overdue(item, now):
+            item["status"] = "unknown"
         item.update(last_checked_at=item.get("observed_at"), freshness_age_seconds=age,
                     official_source=item["source"] in OFFICIAL_SOURCES,
                     source_role="primary" if item["source"] in OFFICIAL_SOURCES else "legacy_unofficial",
                     is_stale=stale, source_state=state["state"], freshness_threshold_seconds=interval * 2)
+        item["content_hash"] = content_hash(item)
         return item
 
-    def changes(self, after=0, limit=100, now=None, competition_id=None):
+    def _scheduled_is_overdue(self, item, now) -> bool:
+        kickoff = parse_time(item.get("kickoff_at"))
+        if kickoff is not None:
+            return kickoff <= now
+        day = item.get("scheduled_date")
+        if not isinstance(day, str) or len(day) != 10:
+            return False
+        zone = next((name for prefix, name in ORGANIZER_ZONES.items() if str(item.get("id") or "").startswith(prefix)), None)
+        today = now.astimezone(ZoneInfo(zone)).date().isoformat() if zone else now.date().isoformat()
+        return day < today
+
+    def changes(self, after=0, limit=100, now=None, competition_id=None, match_ids=None):
         now = now or utcnow()
         with self.connect() as db:
             floor_row = db.execute("SELECT value FROM metadata WHERE key='changes_floor'").fetchone()
@@ -461,6 +487,9 @@ class Store:
             if competition_id:
                 query += " AND competition_id=?"
                 args.append(competition_id)
+            if match_ids:
+                query += " AND match_id IN (" + ",".join("?" * len(match_ids)) + ")"
+                args.extend(match_ids)
             rows = db.execute(query + " ORDER BY seq LIMIT ?", [*args, limit + 1]).fetchall()
             watermark = db.execute("SELECT seq FROM sqlite_sequence WHERE name='changes'").fetchone()
             ids = list({row["match_id"] for row in rows[:limit]})
@@ -479,7 +508,7 @@ class Store:
             event["kind"] = "upsert" if match else "deleted"
             event["match"] = match
             if match:
-                event["content_hash"] = content_hash(match)
+                event["content_hash"] = match["content_hash"]
             items.append(event)
         return {"items": items, "next_after": items[-1]["seq"] if items else after,
                 "has_more": len(rows) > limit, "watermark": watermark[0] if watermark else 0,

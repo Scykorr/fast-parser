@@ -25,6 +25,20 @@ from .german import catalog as german_catalog
 from .russian import catalog as russian_catalog, RPL_REASON
 
 
+def match_ids(values: list[str]) -> list[str] | None:
+    if not values:
+        return None
+    if len(values) > 100:
+        raise ValueError("Не больше 100 id в одном запросе")
+    cleaned = []
+    for value in values:
+        text = value.strip()
+        if not text or len(text) > 200 or any(ch.isspace() for ch in text):
+            raise ValueError("Неверный id матча")
+        cleaned.append(text)
+    return cleaned
+
+
 def create_app(db_path: Path | None = None, start_worker=True) -> FastAPI:
     store = Store(db_path or Path(os.environ.get("FAST_PARSER_DB", str(ROOT / "data" / "football.sqlite3"))))
     csrf = secrets.token_urlsafe(32)
@@ -122,7 +136,8 @@ def create_app(db_path: Path | None = None, start_worker=True) -> FastAPI:
 
     @app.get("/api/v1/matches")
     def matches(competition_id: str | None = None, status: str | None = None, date_from: str | None = None,
-                date_to: str | None = None, cursor: str | None = None, limit: int = Query(default=100, ge=1, le=200)):
+                date_to: str | None = None, cursor: str | None = None, limit: int = Query(default=100, ge=1, le=200),
+                ids: list[str] = Query(default=[], alias="id")):
         try:
             start = stamp(parse_time(date_from)) if date_from else None
             end = stamp(parse_time(date_to)) if date_to else None
@@ -130,38 +145,46 @@ def create_app(db_path: Path | None = None, start_worker=True) -> FastAPI:
                 raise ValueError("Начало должно быть раньше конца")
             if status and status not in {"scheduled", "live", "paused", "finished", "postponed", "cancelled", "abandoned", "unknown"}:
                 raise ValueError("Неизвестный статус")
+            selected = match_ids(ids)
         except ValueError as exc:
             raise HTTPException(422, str(exc)) from exc
         try:
             return store.matches(competition_id, status, start, end, cursor, limit,
-                                  official=store.settings().official_only)
+                                  official=store.settings().official_only, match_ids=selected)
         except ValueError as exc:
             raise HTTPException(422, str(exc)) from exc
 
     @app.get("/api/v1/results")
     def results(competition_id: str | None = None, status: str = "finished", cursor: str | None = None,
-                limit: int = Query(default=100, ge=1, le=200)):
+                limit: int = Query(default=100, ge=1, le=200), ids: list[str] = Query(default=[], alias="id")):
         if status not in {"finished", "cancelled"}:
             raise HTTPException(422, "Архив хранит только finished и cancelled")
         try:
-            return store.results(competition_id, status, cursor, limit, official=store.settings().official_only)
+            return store.results(competition_id, status, cursor, limit, official=store.settings().official_only,
+                                  match_ids=match_ids(ids))
         except ValueError as exc:
             raise HTTPException(422, str(exc)) from exc
 
     @app.get("/api/v1/changes")
     def changes(after: int = Query(default=0, ge=0), limit: int = Query(default=100, ge=1, le=200),
-                competition_id: str | None = None):
+                competition_id: str | None = None, ids: list[str] = Query(default=[], alias="id")):
         try:
-            return store.changes(after, limit, competition_id=competition_id)
+            selected = match_ids(ids)
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from exc
+        try:
+            return store.changes(after, limit, competition_id=competition_id, match_ids=selected)
         except ValueError as exc:
             raise HTTPException(410, str(exc)) from exc
 
     @app.get("/api/v1/matches/{mid}")
     def match(mid: str):
         result = store.match(mid)
-        if result is None:
-            raise HTTPException(404, "Матч не найден или срок хранения истёк")
-        return result
+        if result is not None:
+            return result
+        archived = store.in_archive(mid)
+        detail = "Матч снят со списка и хранится в архиве результатов" if archived else "Матч не найден"
+        return JSONResponse({"detail": detail, "archived": archived, "id": mid}, status_code=404)
 
     @app.get("/api/v1/settings")
     def settings():

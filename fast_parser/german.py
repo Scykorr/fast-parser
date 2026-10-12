@@ -68,13 +68,18 @@ def parse_page(html, division, year, week=None):
             regulation = status == "finished"
             kickoff = parse_time(row.get("kickOff")) or planned if row.get("matchDateFixed") is True else None
             external = f"{year}:{key}"
+            slugs = row.get("slugs") if isinstance(row.get("slugs"), dict) else {}
+            slug = slugs.get("slugLong")
+            public = None
+            if isinstance(slug, str) and re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", slug) and "-vs-" in slug:
+                public = f"https://www.bundesliga.com/en/{division}/matchday/{year}-{int(year)+1}/{current}/{slug}/liveticker"
             matches.append(Match(id="dfl:"+external, external_id=external, competition_id=comp["id"],
                 source=DFL_SOURCE, home_team=teams[0], away_team=teams[1],
                 kickoff_at=stamp(kickoff) if kickoff else None, scheduled_date=planned.astimezone(ZoneInfo("Europe/Berlin")).date().isoformat(),
                 status=status, score_home=scores[0], score_away=scores[1],
                 regular_home=scores[0] if regulation else None, regular_away=scores[1] if regulation else None,
                 score_scope="regulation" if regulation else None, raw_status=raw or None,
-                verification="official_source", source_url=page_url(division, year, current), public_match_url=None))
+                verification="official_source", source_url=page_url(division, year, current), public_match_url=public))
         return comp, matches, current, min(dates), max(dates)
     except (KeyError, TypeError, ValueError, AttributeError) as exc:
         raise SchemaError("DFL: изменился контракт календаря") from exc

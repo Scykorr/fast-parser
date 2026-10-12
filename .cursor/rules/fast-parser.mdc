@@ -3,7 +3,7 @@ description: Требования и контекст разработки су�
 alwaysApply: true
 ---
 
-Это Fast Parser на Python/FastAPI/SQLite, текущая версия кода 0.13.2.
+Это Fast Parser на Python/FastAPI/SQLite, текущая версия кода 0.13.4.
 Перед изменениями прочитай `AGENTS.md` и `docs/CURSOR_HANDOFF.md`.
 Полная карта документов — `docs/DOCUMENTATION_INDEX.md`.
 

@@ -1,5 +1,6 @@
 """Public organiser pages are the production authority; no paid API or fallback."""
 import json
+import re
 from zoneinfo import ZoneInfo
 from bs4 import BeautifulSoup
 from .adapters import SchemaError
@@ -39,13 +40,15 @@ def parse_page(html, division, season=None, week=None):
             if kickoff is None:
                 raise SchemaError("LaLiga: отсутствует дата начала")
             regulation = status == "finished"
+            slug = r.get("slug")
+            public = "https://www.laliga.com/partido/" + slug if isinstance(slug, str) and re.fullmatch(r"temporada-[a-z0-9-]+", slug) else None
             matches.append(Match(id="ll:"+str(r["id"]), external_id=str(r["id"]), source=SOURCE,
                 competition_id=cid, home_team=teams[0], away_team=teams[1], kickoff_at=stamp(kickoff),
                 scheduled_date=kickoff.astimezone(MADRID).date().isoformat(),
                 status=status, score_home=scores[0], score_away=scores[1],
                 regular_home=scores[0] if regulation else None, regular_away=scores[1] if regulation else None,
                 score_scope="regulation" if regulation else None,
-                raw_status=r["status"] or None, verification="official_source", public_match_url=None))
+                raw_status=r["status"] or None, verification="official_source", public_match_url=public))
         rounds = []
         for r in page.get("gameweekList", []):
             if type(r["week"]) is not int or r["week"] <= 0:

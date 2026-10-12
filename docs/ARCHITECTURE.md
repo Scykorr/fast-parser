@@ -205,9 +205,9 @@ TTL от observed приблизительный относительно реа
 | GET /docs, /openapi.json | Человеческая документация и OpenAPI |
 | GET /api/v1/countries | Страны и competition_count |
 | GET /api/v1/competitions[?country] | Каталог/пометки/доступность и capability flags |
-| GET /api/v1/matches | competition_id/status/date_from/date_to/cursor/limit 1–200 |
-| GET /api/v1/matches/{mid} | Текущая карточка; 404 для отсутствующей/истекшей |
-| GET /api/v1/changes | after/limit, next_after/has_more/watermark; 410 для старого cursor |
+| GET /api/v1/matches | competition_id/status/date_from/date_to/cursor/limit 1–200; повторяемый id, до 100 |
+| GET /api/v1/matches/{mid} | Текущая карточка. 404 с archived=true, если id есть в results; archived=false, если матча нет |
+| GET /api/v1/changes | after/limit/competition_id и повторяемый id; 410 для старого cursor, 422 для неверного списка id |
 | GET /api/v1/settings | Текущие настройки |
 | PUT /api/v1/settings | Валидированные настройки; 422 для ошибки, включая shortcut вне каталога и вне исторического списка OpenLigaDB |
 | PUT /api/v1/competitions/{cid}/verification | Пометка с основаниями; 404 если лиги нет |

@@ -3,7 +3,7 @@ from datetime import timedelta
 from fastapi.testclient import TestClient
 
 from fast_parser.app import create_app
-from fast_parser.domain import Match, stamp
+from fast_parser.domain import content_hash, stamp
 from test_retention import game
 
 
@@ -24,6 +24,8 @@ def test_results_keep_the_same_id_after_the_ui_card_expires(store, comp, now):
     assert archived[0]["id"] == "ol:1"
     assert archived[0]["regular_home"] == 2 and archived[0]["score_scope"] == "regulation"
     assert "scheduled_date" in archived[0] and archived[0]["source_url"] is None
+    assert archived[0]["content_hash"] == content_hash(archived[0])
+    assert store.match("ol:1", later) is None and store.in_archive("ol:1", later)
 
 
 def test_card_without_team_ids_is_not_stored(store, comp, now):
@@ -71,6 +73,53 @@ def test_official_only_hides_legacy_cards_and_old_cursor_is_gone(tmp_path, comp,
         stale = store.readiness(now + timedelta(days=6))
         assert stale["status"] == "stale" and stale["data_age_seconds"] >= 6 * 86400
         assert stale["collector_fresh"] is False
+
+
+def test_overdue_scheduled_is_published_as_unknown(store, comp, now):
+    old = game(comp, now - timedelta(days=3), status="scheduled")
+    old.id, old.external_id = "ol:old", "old"
+    store.upsert_matches([old], now - timedelta(days=3))
+    assert store.match("ol:old", now)["status"] == "unknown"
+    fresh = game(comp, now - timedelta(minutes=1), status="scheduled")
+    fresh.id, fresh.external_id = "ol:fresh", "fresh"
+    store.upsert_matches([fresh], now)
+    assert store.match("ol:fresh", now)["status"] == "scheduled"
+    future = game(comp, now + timedelta(days=2), status="scheduled")
+    future.id, future.external_id = "ol:future", "future"
+    store.upsert_matches([future], now - timedelta(days=3))
+    assert store.match("ol:future", now)["status"] == "scheduled"
+
+
+def test_slip_ids_cross_leagues_and_archive_is_not_a_plain_404(tmp_path, comp, now):
+    app = create_app(tmp_path / "slip.sqlite3", start_worker=False)
+    store = app.state.store
+    other = {"id": "ol:la1:2026", "shortcut": "la1", "season": "2026", "name": "Primera", "country": "Испания", "category": "league"}
+    store.catalog([comp, other])
+    settings = store.settings()
+    settings.official_only = False
+    store.save_settings(settings)
+    first = game(comp, now, status="scheduled")
+    second = game(comp, now, status="scheduled")
+    second.id, second.external_id, second.competition_id = "ol:2", "2", other["id"]
+    finished = game(comp, now, score_home=1, score_away=0, score_scope="regulation", regular_home=1, regular_away=0)
+    finished.id, finished.external_id = "ol:done", "done"
+    store.upsert_matches([first, second, finished], now)
+    with TestClient(app) as client:
+        page = client.get("/api/v1/matches", params=[("id", "ol:1"), ("id", "ol:2")]).json()
+        assert {item["id"] for item in page["items"]} == {"ol:1", "ol:2"}
+        assert all(item["content_hash"] for item in page["items"])
+        events = client.get("/api/v1/changes", params=[("id", "ol:1"), ("id", "ol:2")]).json()["items"]
+        assert {event["match_id"] for event in events} == {"ol:1", "ol:2"}
+        assert events[0]["content_hash"] == events[0]["match"]["content_hash"]
+        only = client.get("/api/v1/changes", params={"competition_id": other["id"]}).json()["items"]
+        assert {event["match_id"] for event in only} == {"ol:2"}
+        missing = client.get("/api/v1/matches/missing")
+        assert missing.status_code == 404 and missing.json()["archived"] is False
+        gone = client.get("/api/v1/matches/ol:done")
+        assert gone.status_code == 404 and gone.json()["archived"] is True and gone.json()["id"] == "ol:done"
+        archived = client.get("/api/v1/results", params={"id": "ol:done"}).json()["items"]
+        assert archived[0]["id"] == "ol:done" and archived[0]["content_hash"]
+        assert client.get("/api/v1/matches", params=[("id", f"x{i}") for i in range(101)]).status_code == 422
 
 
 def test_date_only_precision_is_not_midnight(store, comp, now):

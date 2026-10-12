@@ -46,6 +46,14 @@ def test_invalid_contract_quarantined(changes):
     with pytest.raises(SchemaError):parse_page(html(state(**changes)),"bundesliga","2026")
 
 
+def test_public_match_page_uses_official_slug():
+    page = "https://www.bundesliga.com/en/bundesliga/matchday/2026-2027/5/fc-home-vs-fc-away/liveticker"
+    m = parse_page(html(state(slugs={"slugLong": "fc-home-vs-fc-away"})), "bundesliga", "2026")[1][0]
+    assert m.public_match_url == page
+    assert parse_page(html(state(slugs={"slugLong": "https://evil.example/x"})), "bundesliga", "2026")[1][0].public_match_url is None
+    assert parse_page(html(state()), "bundesliga", "2026")[1][0].public_match_url is None
+
+
 def test_final_and_unknown_are_not_invented():
     d = state(matchStatus="FINAL_WHISTLE",score=dict(home=dict(fulltime=2),away=dict(fulltime=1)))
     m = parse_page(html(d),"bundesliga","2026")[1][0]
