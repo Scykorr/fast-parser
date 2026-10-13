@@ -19,7 +19,7 @@ from .domain import parse_time, stamp, utcnow
 from .storage import Store
 from .verification import CoverageVerification
 from .english import OFFICIAL_SOURCES, OFFICIAL_PREFIXES, PL_SOURCE, EFL_SOURCE, catalog as english_catalog
-from .sources import FNL_SOURCE, RPL_SOURCE, DFL_SOURCE, SA_SOURCE, SB_SOURCE, source_for_comp
+from .sources import COVERED_OPENLIGA_SHORTCUTS, FNL_SOURCE, RPL_SOURCE, DFL_SOURCE, SA_SOURCE, SB_SOURCE, source_for_comp
 from .italian import catalog as italian_catalog
 from .german import catalog as german_catalog
 from .russian import catalog as russian_catalog, RPL_REASON
@@ -81,8 +81,15 @@ def create_app(db_path: Path | None = None, start_worker=True) -> FastAPI:
     async def security(request: Request, call_next):
         if request.method in {"POST", "PUT", "DELETE", "PATCH"}:
             origin = request.headers.get("origin")
+            host = request.client.host if request.client else ""
+            local_settings = (
+                request.method == "PUT"
+                and request.url.path == "/api/v1/settings"
+                and origin is None
+                and host in {"127.0.0.1", "::1"}
+            )
             expected = str(request.base_url).rstrip("/")
-            if origin != expected or not secrets.compare_digest(request.headers.get("x-csrf-token", ""), csrf):
+            if not local_settings and (origin != expected or not secrets.compare_digest(request.headers.get("x-csrf-token", ""), csrf)):
                 return JSONResponse({"detail": "Неверный origin или CSRF token; обновите страницу"}, status_code=403)
         response = await call_next(request)
         response.headers["X-Content-Type-Options"] = "nosniff"
@@ -137,7 +144,7 @@ def create_app(db_path: Path | None = None, start_worker=True) -> FastAPI:
     @app.get("/api/v1/matches")
     def matches(competition_id: str | None = None, status: str | None = None, date_from: str | None = None,
                 date_to: str | None = None, cursor: str | None = None, limit: int = Query(default=100, ge=1, le=200),
-                ids: list[str] = Query(default=[], alias="id")):
+                ids: list[str] = Query(default=[], alias="id"), feed: str | None = None):
         try:
             start = stamp(parse_time(date_from)) if date_from else None
             end = stamp(parse_time(date_to)) if date_to else None
@@ -145,12 +152,15 @@ def create_app(db_path: Path | None = None, start_worker=True) -> FastAPI:
                 raise ValueError("Начало должно быть раньше конца")
             if status and status not in {"scheduled", "live", "paused", "finished", "postponed", "cancelled", "abandoned", "unknown"}:
                 raise ValueError("Неизвестный статус")
+            if feed not in {None, "auto"}:
+                raise ValueError("feed: auto")
             selected = match_ids(ids)
         except ValueError as exc:
             raise HTTPException(422, str(exc)) from exc
         try:
             return store.matches(competition_id, status, start, end, cursor, limit,
-                                  official=store.settings().official_only, match_ids=selected)
+                                  official=False if feed == "auto" else store.settings().official_only,
+                                  match_ids=selected, feed=feed)
         except ValueError as exc:
             raise HTTPException(422, str(exc)) from exc
 
@@ -204,7 +214,10 @@ def create_app(db_path: Path | None = None, start_worker=True) -> FastAPI:
             if cid.startswith("rpl:"):
                 raise ValueError(RPL_REASON)
             if store.settings().official_only and not cid.startswith(OFFICIAL_PREFIXES):
-                raise ValueError("Официальный источник этой лиги пока не подключен; неофициальный сбор отключен")
+                shortcut = cid.split(":")[1] if cid.startswith("ol:") else ""
+                uncovered_api = bool(shortcut) and shortcut not in COVERED_OPENLIGA_SHORTCUTS
+                if not uncovered_api:
+                    raise ValueError("Официальный источник этой лиги пока не подключен; неофициальный сбор отключен")
             if cid.startswith(OFFICIAL_PREFIXES):
                 if not any(c["id"] == cid for c in store.competitions()):
                     raise ValueError("Лига не найдена")

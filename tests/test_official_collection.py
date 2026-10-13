@@ -6,7 +6,7 @@ import pytest
 from fastapi.testclient import TestClient
 from fast_parser.app import create_app
 from fast_parser.collector import Collector
-from fast_parser.domain import stamp
+from fast_parser.domain import stamp, utcnow
 from fast_parser.official import parse_page
 from fast_parser.adapters import SchemaError
 
@@ -57,6 +57,7 @@ def test_official_sync_imports_with_provenance_retention_and_shared_quota(store,
     asyncio.run(run())
 
 def test_official_only_worker_never_requests_legacy(store):
+    store.set_meta("catalog_updated_at", stamp(utcnow()))
     async def run():
         c=Collector(store)
         await c.client.aclose()

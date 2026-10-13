@@ -10,6 +10,9 @@ SOURCE_BY_PREFIX = {"ll:":"laliga_reference", "pl:":PL_SOURCE, "efl:":EFL_SOURCE
                     "sa:":SA_SOURCE, "sb:":SB_SOURCE, "dfl:":DFL_SOURCE, "fnl:":FNL_SOURCE, "rpl:":RPL_SOURCE}
 OFFICIAL_SOURCES = set(SOURCE_BY_PREFIX.values())
 OFFICIAL_PREFIXES = tuple(SOURCE_BY_PREFIX)
+# OpenLigaDB shortcuts already collected from the organiser site.
+# feed=auto keeps the free API for every other league.
+COVERED_OPENLIGA_SHORTCUTS = ("pl", "bl1", "bl2", "la1", "la2")
 
 def source_for_comp(cid):
     return next((source for prefix,source in SOURCE_BY_PREFIX.items() if cid.startswith(prefix)),

@@ -122,6 +122,37 @@ def test_slip_ids_cross_leagues_and_archive_is_not_a_plain_404(tmp_path, comp, n
         assert client.get("/api/v1/matches", params=[("id", f"x{i}") for i in range(101)]).status_code == 422
 
 
+def test_openliga_queue_skips_leagues_with_an_official_collector(store, comp, now):
+    uncovered = {**comp, "id": "ol:ucl:2026", "shortcut": "ucl", "name": "Champions League"}
+    store.catalog([comp, uncovered])
+    assert store.due(now.timestamp())["id"] == "ol:ucl:2026"
+
+
+def test_auto_feed_keeps_official_cards_and_uncovered_api(store, comp, now):
+    from fast_parser.domain import Match
+
+    store.catalog([
+        {**comp, "id": "ol:pl:2026", "shortcut": "pl", "name": "Premier League API"},
+        {**comp, "id": "ol:ucl:2026", "shortcut": "ucl", "name": "Champions League"},
+        {**comp, "id": "pl:premier-league:2026", "shortcut": "premier-league", "name": "Premier League"},
+        {**comp, "id": "sky:1", "shortcut": "sky", "name": "Sky"},
+    ])
+
+    def card(match_id, competition_id, source):
+        return Match(id=match_id, competition_id=competition_id, source=source, external_id=match_id,
+                     home_team={"id": match_id + "h", "name": "Home"}, away_team={"id": match_id + "a", "name": "Away"},
+                     kickoff_at=stamp(now + timedelta(days=1)), status="scheduled")
+
+    store.upsert_matches([
+        card("ol:pl:1", "ol:pl:2026", "openligadb"),
+        card("ol:ucl:1", "ol:ucl:2026", "openligadb"),
+        card("pl:2026:1", "pl:premier-league:2026", "premierleague_official"),
+        card("sky:1", "sky:1", "skysports_html"),
+    ], now)
+    found = {row["id"] for row in store.matches(feed="auto", official=False, now=now)["items"]}
+    assert found == {"ol:ucl:1", "pl:2026:1"}
+
+
 def test_date_only_precision_is_not_midnight(store, comp, now):
     match = game(comp, now, status="scheduled")
     match.kickoff_at = None

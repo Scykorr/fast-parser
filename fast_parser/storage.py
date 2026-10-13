@@ -12,6 +12,7 @@ from .config import LEGACY_ENABLED_LEAGUES, Settings
 from .domain import ORGANIZER_ZONES, Match, content_hash, parse_time, prepare_match, present_match, stamp, utcnow
 from .verification import CoverageVerification
 from .english import OFFICIAL_SOURCES
+from .sources import COVERED_OPENLIGA_SHORTCUTS
 
 RESULTS_ARCHIVE_DAYS = 180
 HEARTBEAT_FRESH_SECONDS = 30
@@ -171,8 +172,13 @@ class Store:
                 db.execute("UPDATE competitions SET state='degraded',error=?,next_poll=? WHERE id=?", (error, next_poll, cid))
 
     def due(self, now: float):
+        covered = COVERED_OPENLIGA_SHORTCUTS
         with self.connect() as db:
-            row = db.execute("SELECT * FROM competitions WHERE enabled=1 AND id LIKE 'ol:%' AND next_poll<=? ORDER BY next_poll,id LIMIT 1", (now,)).fetchone()
+            row = db.execute(
+                "SELECT * FROM competitions WHERE enabled=1 AND id LIKE 'ol:%' AND shortcut NOT IN ("
+                + ",".join("?" * len(covered)) + ") AND next_poll<=? ORDER BY next_poll,id LIMIT 1",
+                (*covered, now),
+            ).fetchone()
             return dict(row) if row else None
 
     def request_sync(self, cid: str):
@@ -300,10 +306,18 @@ class Store:
             (item.id, item.competition_id, item.source, item.kickoff_at, item.status,
              item.archive_until, json.dumps(item.to_dict(), ensure_ascii=False)))
 
-    def matches(self, cid=None, status=None, start=None, end=None, cursor=None, limit=100, now=None, official=False, match_ids=None):
+    def matches(self, cid=None, status=None, start=None, end=None, cursor=None, limit=100, now=None, official=False, match_ids=None, feed=None):
         now_s = stamp(now or utcnow())
         clauses, args = ["(expires_at IS NULL OR expires_at>?)"], [now_s]
-        if official:
+        if feed == "auto":
+            official_names = sorted(OFFICIAL_SOURCES)
+            shortcut = "substr(competition_id, 4, instr(substr(competition_id, 4), ':') - 1)"
+            clauses.append(
+                "(source IN (" + ",".join("?" * len(official_names)) + ")"
+                " OR (source='openligadb' AND " + shortcut + " NOT IN (" + ",".join("?" * len(COVERED_OPENLIGA_SHORTCUTS)) + ")))"
+            )
+            args.extend([*official_names, *COVERED_OPENLIGA_SHORTCUTS])
+        elif official:
             names = sorted(OFFICIAL_SOURCES)
             clauses.append("source IN (" + ",".join("?" * len(names)) + ")")
             args.extend(names)

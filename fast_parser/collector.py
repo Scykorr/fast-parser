@@ -480,10 +480,8 @@ class Collector:
         if source in {SA_SOURCE, SB_SOURCE}:
             await self.sync_italian(source)
             return
-        if settings.official_only:
-            return
         if source == "skysports_html":
-            if settings.html_enabled:
+            if settings.html_enabled and not settings.official_only:
                 await self.sync_html()
             return
         updated = await asyncio.to_thread(self.store.get_meta, "catalog_updated_at")
